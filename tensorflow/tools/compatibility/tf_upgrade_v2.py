@@ -51,6 +51,9 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
         "tf.nn.sufficient_statistics": {
             "keep_dims": "keepdims"
         },
+        "tf.sparse.split": {
+            "split_dim": "axis",
+        },
         "tf.multinomial": {
             "output_dtype": "dtype",
         },
@@ -67,7 +70,13 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
         "tf.nn.convolution": {
             "filter": "filters",
             "dilation_rate": "dilations",
-        }
+        },
+        "tf.gfile.Exists": {
+            "filename": "path",
+        },
+        "tf.random.stateless_multinomial": {
+            "output_dtype": "dtype",
+        },
     }
 
     # Mapping from function to the new name of the function
@@ -122,6 +131,7 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
         "tf.contrib.data.unique": "tf.data.experimental.unique",
         "tf.quantize_v2": "tf.quantization.quantize",
         "tf.sparse_concat": "tf.sparse.concat",
+        "tf.sparse_split": "tf.sparse.split",
         "tf.multinomial": "tf.random.categorical",
         "tf.random.multinomial": "tf.random.categorical",
         "tf.load_file_system_library": "tf.load_library",
@@ -154,6 +164,10 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
             "input", "window_shape", "pooling_type", "padding", "dilation_rate",
             "strides", "name", "data_format"
         ],
+        "tf.nn.depthwise_conv2d": [
+            "input", "filter", "strides", "padding", "rate", "name",
+            "data_format"
+        ],
         "tf.multinomial": [
             "logits", "num_samples", "seed", "name", "output_dtype"
         ],
@@ -170,6 +184,17 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
         "tf.sparse.concat": [
             "axis", "sp_inputs", "name", "expand_nonconcat_dim", "concat_dim"
         ],
+        "tf.random.poisson": ["lam", "shape", "dtype", "seed", "name"],
+        "tf.sparse.segment_mean": [
+            "data", "indices", "segment_ids", "name", "num_segments"
+        ],
+        "tf.sparse.segment_sqrt_n": [
+            "data", "indices", "segment_ids", "name", "num_segments"
+        ],
+        "tf.sparse.segment_sum": [
+            "data", "indices", "segment_ids", "name", "num_segments"
+        ],
+        "tf.strings.length": ["input", "name", "unit"],
     }
 
     # Specially handled functions.
