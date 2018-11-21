@@ -556,7 +556,8 @@ class StridedSliceTest(test_util.TensorFlowTestCase):
   def testInt64GPU(self):
     if not test_util.is_gpu_available():
       self.skipTest("No GPU available")
-    with self.session(use_gpu=True, force_gpu=True):
+
+    with test_util.force_gpu():
       x = constant_op.constant([1., 2., 3.])
       begin = constant_op.constant([2], dtype=dtypes.int64)
       end = constant_op.constant([3], dtype=dtypes.int64)
@@ -832,7 +833,7 @@ class StridedSliceGradTest(test_util.TensorFlowTestCase):
       index = constant_op.constant(1, dtype=dtypes.int64)
       b = 2. * a[index]
       grad, = gradients_impl.gradients(b, a)
-      self.assertAllEqual(self.evaluate(grad), [0., 2., 0.])
+      self.assertAllEqual(sess.run(grad), [0., 2., 0.])
 
 
 class StridedSliceGradTypeTest(test_util.TensorFlowTestCase):
@@ -845,7 +846,7 @@ class StridedSliceGradTypeTest(test_util.TensorFlowTestCase):
               math_ops.cast(math_ops.range(1, 5, 1), dtypes.float32),
               shape=(4, 1, 1)))
       varshape = variables.Variable([6, 4, 4], dtype=dtypes.int32)
-      self.evaluate(variables.global_variables_initializer())
+      sess.run(variables.global_variables_initializer())
       begin = constant_op.constant([0, 0, 0])
       end = constant_op.constant([4, 1, 1])
       strides = constant_op.constant([1, 1, 1])
@@ -858,7 +859,7 @@ class StridedSliceGradTypeTest(test_util.TensorFlowTestCase):
           math_ops.cast(math_ops.range(1, 5, 1), dtypes.float32),
           shape=(4, 1, 1))
       original_shape = constant_op.constant([6, 4, 4], dtype=dtypes.int64)
-      self.evaluate(variables.global_variables_initializer())
+      sess.run(variables.global_variables_initializer())
       begin = constant_op.constant([0, 0, 0], dtype=dtypes.int64)
       end = constant_op.constant([4, 1, 1], dtype=dtypes.int64)
       strides = constant_op.constant([1, 1, 1], dtype=dtypes.int64)
@@ -872,7 +873,7 @@ class StridedSliceGradTypeTest(test_util.TensorFlowTestCase):
           math_ops.cast(math_ops.range(1, 5, 1), dtypes.float32),
           shape=(4, 1, 1))
       original_shape = constant_op.constant([6, 4, 4], dtype=dtypes.int64)
-      self.evaluate(variables.global_variables_initializer())
+      sess.run(variables.global_variables_initializer())
       begin = constant_op.constant([0, 0, 0], dtype=dtypes.int32)
       end = constant_op.constant([4, 1, 1], dtype=dtypes.int64)
       strides = constant_op.constant([1, 1, 1], dtype=dtypes.int64)
@@ -1041,7 +1042,7 @@ class SliceAssignTest(test_util.TensorFlowTestCase):
     too_large_val = constant_op.constant([3, 4], dtype=dtypes.int64)
     v = resource_variable_ops.ResourceVariable(init_val)
     with self.cached_session() as sess:
-      self.evaluate(v.initializer)
+      sess.run(v.initializer)
       with self.assertRaises(ValueError):
         sess.run(v[:].assign(too_large_val))
       with self.assertRaises(ValueError):
@@ -1187,18 +1188,18 @@ class IdentityTest(test_util.TensorFlowTestCase):
         self.assertAllEqual(x.numpy(), y.numpy())
         self.assertTrue(device in y.device.lower())
 
-      with ops.device("gpu:0"):
+      with test_util.force_gpu():
         a = constant_op.constant([[2], [3]], dtype=dtypes.float32)
-      with ops.device("gpu:0"):
+      with test_util.force_gpu():
         b = array_ops.identity(a)
         _test(a, b, "gpu")
-      with ops.device("cpu:0"):
+      with test_util.force_cpu():
         c = array_ops.identity(b)
         _test(b, c, "cpu")
-      with ops.device("cpu:0"):
+      with test_util.force_cpu():
         d = array_ops.identity(c)
         _test(c, d, "cpu")
-      with ops.device("gpu:0"):
+      with test_util.force_gpu():
         e = array_ops.identity(d)
         _test(d, e, "gpu")
 
@@ -1268,7 +1269,7 @@ class GuaranteeConstOpTest(test_util.TensorFlowTestCase):
             initializer=init_ops.constant_initializer(10.0),
             use_resource=use_resource)
         guarantee_a = array_ops.guarantee_const(a)
-        self.evaluate(variables.global_variables_initializer())
+        sess.run(variables.global_variables_initializer())
         self.assertEqual(10.0, guarantee_a.eval())
 
   def testResourceRejection(self):
@@ -1278,7 +1279,7 @@ class GuaranteeConstOpTest(test_util.TensorFlowTestCase):
           initializer=init_ops.constant_initializer(10.0),
           use_resource=True)
       guarantee_a = array_ops.guarantee_const(a.handle)
-      self.evaluate(variables.global_variables_initializer())
+      sess.run(variables.global_variables_initializer())
       with self.assertRaisesWithPredicateMatch(errors.InvalidArgumentError,
                                                "cannot be a resource variable"):
         guarantee_a.eval()

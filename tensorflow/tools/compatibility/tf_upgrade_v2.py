@@ -43,6 +43,9 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
         "tf.expand_dims": {
             "dim": "axis",
         },
+        "tf.batch_to_space_nd": {
+            "block_size": "block_shape",
+        },
         "tf.convert_to_tensor": {
             "preferred_dtype": "dtype_hint"
         },
@@ -60,10 +63,17 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
         "tf.nn.sufficient_statistics": {
             "keep_dims": "keepdims"
         },
+        "tf.nn.log_softmax": {
+            "dim": "axis",
+        },
+        "tf.nn.softmax": {
+            "dim": "axis",
+        },
         "tf.debugging.assert_all_finite": {
             "t": "x",
             "msg": "message",
         },
+        "tf.sparse.add": ["a", "b", "thresh"],
         "tf.sparse.split": {
             "split_dim": "axis",
         },
@@ -77,6 +87,9 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
             "t": "input",
             "m": "mean",
             "v": "variance",
+        },
+        "tf.manip.batch_to_space_nd": {
+            "block_size": "block_shape",
         },
         "tf.nn.conv3d": {
             "filter": "filters"
@@ -101,6 +114,73 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
         "tf.random.stateless_multinomial": {
             "output_dtype": "dtype",
         },
+        "tf.sparse.concat": [
+            "axis", "sp_inputs", "name", "expand_nonconcat_dim", "concat_dim"
+        ],
+        "tf.reduce_all": {
+            "reduction_indices": "axis",
+            "keep_dims": "keepdims",
+        },
+        "tf.math.reduce_all": {
+            "reduction_indices": "axis",
+            "keep_dims": "keepdims",
+        },
+        "tf.reduce_any": {
+            "reduction_indices": "axis",
+            "keep_dims": "keepdims",
+        },
+        "tf.math.reduce_any": {
+            "reduction_indices": "axis",
+            "keep_dims": "keepdims",
+        },
+        "tf.reduce_min": {
+            "reduction_indices": "axis",
+            "keep_dims": "keepdims",
+        },
+        "tf.math.reduce_min": {
+            "reduction_indices": "axis",
+            "keep_dims": "keepdims",
+        },
+        "tf.reduce_max": {
+            "reduction_indices": "axis",
+            "keep_dims": "keepdims",
+        },
+        "tf.math.reduce_max": {
+            "reduction_indices": "axis",
+            "keep_dims": "keepdims",
+        },
+        "tf.reduce_sum": {
+            "reduction_indices": "axis",
+            "keep_dims": "keepdims",
+        },
+        "tf.math.reduce_sum": {
+            "reduction_indices": "axis",
+            "keep_dims": "keepdims",
+        },
+        "tf.reduce_mean": {
+            "reduction_indices": "axis",
+            "keep_dims": "keepdims",
+        },
+        "tf.math.reduce_mean": {
+            "reduction_indices": "axis",
+            "keep_dims": "keepdims",
+        },
+        "tf.reduce_prod": {
+            "reduction_indices": "axis",
+            "keep_dims": "keepdims",
+        },
+        "tf.math.reduce_prod": {
+            "reduction_indices": "axis",
+            "keep_dims": "keepdims",
+        },
+        "tf.reduce_logsumexp": {
+            "reduction_indices": "axis",
+            "keep_dims": "keepdims",
+        },
+        "tf.math.reduce_logsumexp": {
+            "reduction_indices": "axis",
+            "keep_dims": "keepdims",
+        },
     }
 
     # Mapping from function to the new name of the function
@@ -111,6 +191,7 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
     # function_reorders or function_keyword_renames, use the OLD function name.
     # These renames happen after the arguments have been processed.
     self.symbol_renames.update({
+        "tf.batch_to_space_nd": "tf.batch_to_space",
         "tf.contrib.data.AUTOTUNE": "tf.data.experimental.AUTOTUNE",
         "tf.contrib.data.Counter": "tf.data.experimental.Counter",
         "tf.contrib.data.CheckpointInputPipelineHook": "tf.data.experimental.CheckpointInputPipelineHook",
@@ -153,6 +234,9 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
         "tf.contrib.data.sloppy_interleave": "tf.compat.v1.contrib.data.sloppy_interleave",
         "tf.contrib.data.unbatch": "tf.data.experimental.unbatch",
         "tf.contrib.data.unique": "tf.data.experimental.unique",
+        "tf.contrib.framework.sort": "tf.sort",
+        "tf.contrib.framework.argsort": "tf.argsort",
+        "tf.manip.batch_to_space_nd": "tf.batch_to_space",
         "tf.quantize_v2": "tf.quantization.quantize",
         "tf.sparse_concat": "tf.sparse.concat",
         "tf.sparse_split": "tf.sparse.split",
@@ -178,11 +262,13 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
     self.function_reorders = {
         "tf.argmax": ["input", "axis", "name", "dimension", "output_type"],
         "tf.argmin": ["input", "axis", "name", "dimension", "output_type"],
+        "tf.batch_to_space": ["input", "crops", "block_size", "name"],
         "tf.boolean_mask": ["tensor", "mask", "name", "axis"],
         "tf.convert_to_tensor": ["value", "dtype", "name", "preferred_dtype"],
         "tf.nn.convolution": [
             "input", "filter", "padding", "strides", "dilation_rate", "name",
-            "data_format"],
+            "data_format"
+        ],
         "tf.nn.crelu": ["features", "name", "axis"],
         "tf.nn.pool": [
             "input", "window_shape", "pooling_type", "padding", "dilation_rate",
@@ -192,6 +278,7 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
             "input", "filter", "strides", "padding", "rate", "name",
             "data_format"
         ],
+        "tf.manip.batch_to_space_nd": ["input", "crops", "block_size", "name"],
         "tf.multinomial": [
             "logits", "num_samples", "seed", "name", "output_dtype"
         ],
@@ -200,15 +287,19 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
         ],
         "tf.pad": ["tensor", "paddings", "mode", "name", "constant_values"],
         "tf.quantize_v2": [
-            "input", "min_range", "max_range", "T", "mode", "name",
-            "round_mode"
+            "input", "min_range", "max_range", "T", "mode", "name", "round_mode"
+        ],
+        "tf.feature_column.categorical_column_with_vocabulary_file": [
+            "key", "vocabulary_file", "vocabulary_size", "num_oov_buckets",
+            "default_value", "dtype"
         ],
         "tf.shape": ["input", "name", "out_type"],
         "tf.size": ["input", "name", "out_type"],
+        "tf.random.poisson": ["lam", "shape", "dtype", "seed", "name"],
+        "tf.sparse.add": ["a", "b", "thresh"],
         "tf.sparse.concat": [
             "axis", "sp_inputs", "name", "expand_nonconcat_dim", "concat_dim"
         ],
-        "tf.random.poisson": ["lam", "shape", "dtype", "seed", "name"],
         "tf.sparse.segment_mean": [
             "data", "indices", "segment_ids", "name", "num_segments"
         ],
@@ -219,6 +310,77 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
             "data", "indices", "segment_ids", "name", "num_segments"
         ],
         "tf.strings.length": ["input", "name", "unit"],
+        "tf.transpose": ["a", "perm", "name", "conjugate"],
+        "tf.tuple": ["tensors", "name", "control_inputs"],
+        "tf.while_loop": [
+            "cond", "body", "loop_vars", "shape_invariants",
+            "parallel_iterations", "back_prop", "swap_memory", "name",
+            "maximum_iterations", "return_same_structure"
+        ],
+        "tf.reduce_all": [
+            "input_tensor", "axis", "keepdims", "name", "reduction_indices",
+            "keep_dims"
+        ],
+        "tf.math.reduce_all": [
+            "input_tensor", "axis", "keepdims", "name", "reduction_indices",
+            "keep_dims"
+        ],
+        "tf.reduce_any": [
+            "input_tensor", "axis", "keepdims", "name", "reduction_indices",
+            "keep_dims"
+        ],
+        "tf.math.reduce_any": [
+            "input_tensor", "axis", "keepdims", "name", "reduction_indices",
+            "keep_dims"
+        ],
+        "tf.reduce_min": [
+            "input_tensor", "axis", "keepdims", "name", "reduction_indices",
+            "keep_dims"
+        ],
+        "tf.math.reduce_min": [
+            "input_tensor", "axis", "keepdims", "name", "reduction_indices",
+            "keep_dims"
+        ],
+        "tf.reduce_max": [
+            "input_tensor", "axis", "keepdims", "name", "reduction_indices",
+            "keep_dims"
+        ],
+        "tf.math.reduce_max": [
+            "input_tensor", "axis", "keepdims", "name", "reduction_indices",
+            "keep_dims"
+        ],
+        "tf.reduce_sum": [
+            "input_tensor", "axis", "keepdims", "name", "reduction_indices",
+            "keep_dims"
+        ],
+        "tf.math.reduce_sum": [
+            "input_tensor", "axis", "keepdims", "name", "reduction_indices",
+            "keep_dims"
+        ],
+        "tf.reduce_mean": [
+            "input_tensor", "axis", "keepdims", "name", "reduction_indices",
+            "keep_dims"
+        ],
+        "tf.math.reduce_mean": [
+            "input_tensor", "axis", "keepdims", "name", "reduction_indices",
+            "keep_dims"
+        ],
+        "tf.reduce_prod": [
+            "input_tensor", "axis", "keepdims", "name", "reduction_indices",
+            "keep_dims"
+        ],
+        "tf.math.reduce_prod": [
+            "input_tensor", "axis", "keepdims", "name", "reduction_indices",
+            "keep_dims"
+        ],
+        "tf.reduce_logsumexp": [
+            "input_tensor", "axis", "keepdims", "name", "reduction_indices",
+            "keep_dims"
+        ],
+        "tf.math.reduce_logsumexp": [
+            "input_tensor", "axis", "keepdims", "name", "reduction_indices",
+            "keep_dims"
+        ],
     }
 
     # Specially handled functions.

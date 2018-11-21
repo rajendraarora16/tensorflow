@@ -254,7 +254,7 @@ class TPUExtended(distribute_lib.DistributionStrategyExtended):
       self, fn, multi_worker_iterator, iterations, initial_loop_values=None):
     output_shapes = multi_worker_iterator.output_shapes
     shapes = nest.flatten(output_shapes)
-    if any([not s.is_fully_defined() for s in shapes]):
+    if any(not s.is_fully_defined() for s in shapes):
       raise ValueError(
           "TPU currently requires fully defined shapes. Either use "
           "set_shape() on the input tensors or use "
@@ -544,6 +544,11 @@ class TPUExtended(distribute_lib.DistributionStrategyExtended):
       if cluster_spec:
         session_config.cluster_def.CopyFrom(cluster_spec.as_cluster_def())
 
+  # TODO(priyag): Delete this once all strategies use global batch size.
+  @property
+  def _global_batch_size(self):
+    return True
+
 
 class _TPUReplicaContext(distribute_lib.ReplicaContext):
   """Replication Context class for TPU Strategy."""
@@ -557,12 +562,8 @@ class _TPUReplicaContext(distribute_lib.ReplicaContext):
         replica_id_in_sync_group=constant_op.constant(0, dtypes.int32))
 
   @property
-  def device(self):
-    raise RuntimeError("Use .devices instead")
-
-  @property
   def devices(self):
     distribute_lib.require_replica_context(self)
     ds = self._distribution_strategy
     replica_id = tensor_util.constant_value(self._replica_id_in_sync_group)
-    return [ds.worker_devices[replica_id]]
+    return [ds.extended.worker_devices[replica_id]]

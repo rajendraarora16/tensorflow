@@ -1044,7 +1044,7 @@ def is_gpu_available(cuda_only=False, min_cuda_compute_capability=None):
         return True
     return False
   except errors_impl.NotFoundError as e:
-    if not all([x in str(e) for x in ["CUDA", "not find"]]):
+    if not all(x in str(e) for x in ["CUDA", "not find"]):
       raise e
     else:
       logging.error(str(e))
@@ -1059,6 +1059,27 @@ def device(use_gpu):
   else:
     dev = "/device:CPU:0"
   with ops.device(dev):
+    yield
+
+
+@contextlib.contextmanager
+def use_gpu():
+  """Uses gpu when requested and available."""
+  with device(use_gpu=True):
+    yield
+
+
+@contextlib.contextmanager
+def force_gpu():
+  """Force the gpu to be used."""
+  with ops.device("/device:GPU:0"):
+    yield
+
+
+@contextlib.contextmanager
+def force_cpu():
+  """Force the cpu to be used."""
+  with ops.device("/device:CPU:0"):
     yield
 
 

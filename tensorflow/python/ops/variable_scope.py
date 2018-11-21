@@ -680,7 +680,7 @@ class _VariableStore(object):
             "Partitioner returned a partition list that does not match the "
             "Variable's rank: %s vs. %s" % (partitions, shape))
 
-      if any([p < 1 for p in partitions]):
+      if any(p < 1 for p in partitions):
         raise ValueError(
             "Partitioner returned zero partitions for some axes: %s" %
             partitions)
@@ -799,15 +799,13 @@ class _VariableStore(object):
       vs.append(var)
       # pylint: enable=protected-access
 
-      # pylint: disable=protected-access
     partitioned_var = variables.PartitionedVariable(name=name,
                                                     shape=shape,
                                                     dtype=dtype,
                                                     variable_list=vs,
                                                     partitions=partitions)
-    # pylint: enable=protected-access
-
-    self._partitioned_vars[name] = partitioned_var
+    if not context.executing_eagerly() or self._store_eager_variables:
+      self._partitioned_vars[name] = partitioned_var
     return partitioned_var
 
   def _get_single_variable(self,
