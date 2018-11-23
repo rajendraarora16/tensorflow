@@ -350,6 +350,7 @@ def configure_and_create_session(distribution_strategy):
       session = session_module.Session(
           config=dc_session_config, target=worker_context.master_target)
     else:
+      distribution_strategy.configure(session_config)
       session = session_module.Session(config=session_config)
 
   K.set_session(session)
@@ -381,7 +382,7 @@ def validate_inputs(x, y, distribution_strategy):
 
   if is_tpu_strategy(distribution_strategy):
     for i in [x, y]:
-      if isinstance(i, dataset_ops.Dataset):
+      if isinstance(i, dataset_ops.DatasetV2):
         shapes = nest.flatten(i.output_shapes)
         try:
           s = next(s for s in shapes if not s.is_fully_defined())

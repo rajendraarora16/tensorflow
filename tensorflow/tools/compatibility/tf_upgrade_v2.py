@@ -111,8 +111,52 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
         "tf.gfile.Exists": {
             "filename": "path",
         },
+        "tf.gfile.Remove": {
+            "filename": "path",
+        },
+        "tf.gfile.Stat": {
+            "filename": "path",
+        },
+        "tf.gfile.Glob": {
+            "filename": "pattern",
+        },
+        "tf.gfile.MkDir": {
+            "dirname": "path",
+        },
+        "tf.gfile.MakeDirs": {
+            "dirname": "path",
+        },
+        "tf.gfile.DeleteRecursively": {
+            "dirname": "path",
+        },
+        "tf.gfile.IsDirectory": {
+            "dirname": "path",
+        },
+        "tf.gfile.ListDirectory": {
+            "dirname": "path",
+        },
+        "tf.gfile.Copy": {
+            "oldpath": "src",
+            "newpath": "dst",
+        },
+        "tf.gfile.Rename": {
+            "oldpath": "src",
+            "newpath": "dst",
+        },
+        "tf.gfile.Walk": {
+            "in_order": "topdown",
+        },
         "tf.random.stateless_multinomial": {
             "output_dtype": "dtype",
+        },
+        "tf.linalg.l2_normalize": {
+            "dim": "axis",
+        },
+        "tf.math.l2_normalize": {
+            "dim": "axis",
+        },
+        "tf.nn.l2_normalize": {
+            "dim": "axis",
         },
         "tf.sparse.concat": [
             "axis", "sp_inputs", "name", "expand_nonconcat_dim", "concat_dim"
@@ -181,6 +225,17 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
             "reduction_indices": "axis",
             "keep_dims": "keepdims",
         },
+        "tf.reduce_join": {
+            "keep_dims": "keepdims",
+            "reduction_indices": "axis"
+        },
+        "tf.strings.reduce_join": {
+            "keep_dims": "keepdims",
+            "reduction_indices": "axis"
+        },
+        "tf.squeeze": {
+            "squeeze_dims": "axis",
+        },
     }
 
     # Mapping from function to the new name of the function
@@ -192,6 +247,18 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
     # These renames happen after the arguments have been processed.
     self.symbol_renames.update({
         "tf.batch_to_space_nd": "tf.batch_to_space",
+        "tf.gfile.Copy": "tf.io.gfile.Copy",
+        "tf.gfile.DeleteRecursively": "tf.io.gfile.DeleteRecursively",
+        "tf.gfile.Exists": "tf.io.gfile.Exists",
+        "tf.gfile.Glob": "tf.io.gfile.Glob",
+        "tf.gfile.IsDirectory": "tf.io.gfile.IsDirectory",
+        "tf.gfile.ListDirectory": "tf.io.gfile.ListDirectory",
+        "tf.gfile.MakeDirs": "tf.io.gfile.MakeDirs",
+        "tf.gfile.MkDir": "tf.io.gfile.MkDir",
+        "tf.gfile.Remove": "tf.io.gfile.Remove",
+        "tf.gfile.Rename": "tf.io.gfile.Rename",
+        "tf.gfile.Stat": "tf.io.gfile.Stat",
+        "tf.gfile.Walk": "tf.io.gfile.Walk",
         "tf.contrib.data.AUTOTUNE": "tf.data.experimental.AUTOTUNE",
         "tf.contrib.data.Counter": "tf.data.experimental.Counter",
         "tf.contrib.data.CheckpointInputPipelineHook": "tf.data.experimental.CheckpointInputPipelineHook",
@@ -243,6 +310,7 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
         "tf.multinomial": "tf.random.categorical",
         "tf.random.multinomial": "tf.random.categorical",
         "tf.load_file_system_library": "tf.load_library",
+        "tf.pywrap_tensorflow": "tf.compat.v1.pywrap_tensorflow",
     })
     # pylint: enable=line-too-long
 
@@ -260,6 +328,8 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
     # IMPORTANT: order here should correspond to OLD argument order.
     # We just prepend "arg_name=" to all arguments in function calls.
     self.function_reorders = {
+        "tf.io.serialize_sparse": ["sp_input", "name", "out_type"],
+        "tf.io.serialize_many_sparse": ["sp_input", "name", "out_type"],
         "tf.argmax": ["input", "axis", "name", "dimension", "output_type"],
         "tf.argmin": ["input", "axis", "name", "dimension", "output_type"],
         "tf.batch_to_space": ["input", "crops", "block_size", "name"],
@@ -309,9 +379,20 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
         "tf.sparse.segment_sum": [
             "data", "indices", "segment_ids", "name", "num_segments"
         ],
+        "tf.strings.substr": ["input", "pos", "len", "name", "unit"],
+        "tf.strings.reduce_join": [
+            "input", "axis", "keep_dims", "separator", "name",
+            "reduction_indices"
+        ],
         "tf.strings.length": ["input", "name", "unit"],
         "tf.transpose": ["a", "perm", "name", "conjugate"],
         "tf.tuple": ["tensors", "name", "control_inputs"],
+        "tf.io.parse_example": [
+            "serialized", "features", "name", "example_names"
+        ],
+        "tf.io.parse_single_example": [
+            "serialized", "features", "name", "example_names"
+        ],
         "tf.while_loop": [
             "cond", "body", "loop_vars", "shape_invariants",
             "parallel_iterations", "back_prop", "swap_memory", "name",
@@ -380,6 +461,10 @@ class TFAPIChangeSpec(ast_edits.APIChangeSpec):
         "tf.math.reduce_logsumexp": [
             "input_tensor", "axis", "keepdims", "name", "reduction_indices",
             "keep_dims"
+        ],
+        "tf.reduce_join": [
+            "input", "axis", "keep_dims", "separator", "name",
+            "reduction_indices"
         ],
     }
 
