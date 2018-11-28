@@ -25,6 +25,8 @@ import threading
 
 from tensorflow.python import pywrap_tensorflow
 from tensorflow.python.distribute import cross_device_ops as cross_device_ops_lib
+from tensorflow.python.distribute import device_util
+from tensorflow.python.distribute import distribute_lib
 from tensorflow.python.distribute import multi_worker_util
 from tensorflow.python.distribute import reduce_util
 from tensorflow.python.distribute import shared_variable_creator
@@ -40,8 +42,6 @@ from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.training import coordinator
-from tensorflow.python.training import device_util
-from tensorflow.python.training import distribute as distribute_lib
 from tensorflow.python.util import nest
 
 
@@ -457,7 +457,8 @@ class MirroredExtended(distribute_lib.DistributionStrategyExtended):
     if self._cluster_spec:
       worker_device_pairs = self._worker_devices
     else:
-      worker_device_pairs = [("/job:localhost", self._devices)]
+      worker = device_util.canonicalize("/device:CPU:0")
+      worker_device_pairs = [(worker, self._devices)]
     return values.DatasetIterator(dataset, worker_device_pairs,
                                   self._num_replicas_in_sync)
 
@@ -471,7 +472,8 @@ class MirroredExtended(distribute_lib.DistributionStrategyExtended):
       worker_device_pairs = self._worker_devices
     else:
       num_workers = 1
-      worker_device_pairs = [("/job:localhost", self._devices)]
+      worker = device_util.canonicalize("/device:CPU:0")
+      worker_device_pairs = [(worker, self._devices)]
     for i in range(num_workers):
       input_contexts.append(distribute_lib.InputContext(
           num_input_pipelines=num_workers,
