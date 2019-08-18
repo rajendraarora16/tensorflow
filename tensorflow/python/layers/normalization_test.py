@@ -38,6 +38,7 @@ from tensorflow.python.training import gradient_descent
 from tensorflow.python.training import saver as saver_lib
 
 
+@test_util.run_v1_only('b/120545219')
 class BNTest(test.TestCase):
 
   def _simple_model(self, image, fused, freeze_mode):
@@ -144,7 +145,6 @@ class BNTest(test.TestCase):
 
     return train_vars, loss_val
 
-  @test_util.run_deprecated_v1
   def testHalfPrecision(self):
     ref_vars, ref_loss = self._trainEvalSequence(
         dtype=dtypes.float32,
@@ -211,7 +211,7 @@ class BNTest(test.TestCase):
     self.assertEqual(len(vars_fused), 5)
     self.assertEqual(len(vars_nonfused), 5)
     for var_fused, var_nonfused in zip(vars_fused, vars_nonfused):
-      self.assertAllClose(var_fused, var_nonfused, atol=1e-6)
+      self.assertAllClose(var_fused, var_nonfused, atol=1e-5)
 
     image_val = np.random.rand(batch, height, width,
                                input_channels).astype(np.float32)
@@ -219,7 +219,7 @@ class BNTest(test.TestCase):
                                  use_gpu_test_a, True)
     loss_nonfused_val = self._infer(checkpoint_path_b, image_val, shape,
                                     use_gpu_test_b, False)
-    self.assertAllClose(loss_fused_val, loss_nonfused_val, atol=1e-6)
+    self.assertAllClose(loss_fused_val, loss_nonfused_val, atol=1e-6, rtol=3e-4)
 
   def _testCheckpointCrossDevice(self, ckpt_a_fused, ckpt_a_use_gpu,
                                  ckpt_b_fused, ckpt_b_use_gpu):
@@ -230,43 +230,33 @@ class BNTest(test.TestCase):
                                ckpt_b_use_gpu, use_gpu_test_a, use_gpu_test_b,
                                freeze_mode)
 
-  @test_util.run_deprecated_v1
   def testCheckpointFusedCPUAndFusedGPU(self):
     self._testCheckpointCrossDevice(True, False, True, True)
 
-  @test_util.run_deprecated_v1
   def testCheckpointFusedCPUAndFusedCPU(self):
     self._testCheckpointCrossDevice(True, False, True, False)
 
-  @test_util.run_deprecated_v1
   def testCheckpointFusedGPUAndFusedGPU(self):
     self._testCheckpointCrossDevice(True, True, True, True)
 
-  @test_util.run_deprecated_v1
   def testCheckpointNonFusedCPUAndNonFusedGPU(self):
     self._testCheckpointCrossDevice(False, False, False, True)
 
-  @test_util.run_deprecated_v1
   def testCheckpointNonFusedCPUAndNonFusedCPU(self):
     self._testCheckpointCrossDevice(False, False, False, False)
 
-  @test_util.run_deprecated_v1
   def testCheckpointNonFusedGPUAndNonFusedGPU(self):
     self._testCheckpointCrossDevice(False, True, False, True)
 
-  @test_util.run_deprecated_v1
   def testCheckpointNonFusedGPUAndFusedGPU(self):
     self._testCheckpointCrossDevice(False, True, True, True)
 
-  @test_util.run_deprecated_v1
   def testCheckpointNonFusedGPUAndFusedCPU(self):
     self._testCheckpointCrossDevice(False, True, True, False)
 
-  @test_util.run_deprecated_v1
   def testCheckpointNonFusedCPUAndFusedCPU(self):
     self._testCheckpointCrossDevice(False, False, True, False)
 
-  @test_util.run_deprecated_v1
   def testCreateBN(self):
     # Call layer.
     bn = normalization_layers.BatchNormalization(axis=1)
@@ -293,7 +283,6 @@ class BNTest(test.TestCase):
         ops.get_collection(ops.GraphKeys.TRAINABLE_VARIABLES),
         bn.trainable_variables)
 
-  @test_util.run_deprecated_v1
   def testCreateFusedBNFloat16(self):
     # Call layer.
     bn = normalization_layers.BatchNormalization(axis=1, fused=True)
@@ -323,7 +312,6 @@ class BNTest(test.TestCase):
         ops.get_collection(ops.GraphKeys.TRAINABLE_VARIABLES),
         bn.trainable_variables)
 
-  @test_util.run_deprecated_v1
   def test3DInputAxis1(self):
     epsilon = 1e-3
     bn = normalization_layers.BatchNormalization(
@@ -367,7 +355,6 @@ class BNTest(test.TestCase):
       self.assertAlmostEqual(np.mean(normed_np_output), 0., places=1)
       self.assertAlmostEqual(np.std(normed_np_output), 1., places=1)
 
-  @test_util.run_deprecated_v1
   def test3DInputAxis2(self):
     epsilon = 1e-3
     bn = normalization_layers.BatchNormalization(
@@ -451,7 +438,6 @@ class BNTest(test.TestCase):
         self.assertAlmostEqual(np.mean(normed_np_output), 0., places=1)
         self.assertAlmostEqual(np.std(normed_np_output), 1., places=1)
 
-  @test_util.run_deprecated_v1
   def test4DInputAxis2(self):
     epsilon = 1e-3
     bn = normalization_layers.BatchNormalization(
@@ -493,7 +479,6 @@ class BNTest(test.TestCase):
       self.assertAlmostEqual(np.mean(normed_np_output), 0., places=1)
       self.assertAlmostEqual(np.std(normed_np_output), 1., places=1)
 
-  @test_util.run_deprecated_v1
   def test4DInputAxis3(self):
     epsilon = 1e-3
     bn = normalization_layers.BatchNormalization(
@@ -535,7 +520,6 @@ class BNTest(test.TestCase):
       self.assertAlmostEqual(np.mean(normed_np_output), 0., places=1)
       self.assertAlmostEqual(np.std(normed_np_output), 1., places=1)
 
-  @test_util.run_deprecated_v1
   def test4DInputAxis3Fused(self):
     epsilon = 1e-3
     bn = normalization_layers.BatchNormalization(
@@ -619,7 +603,6 @@ class BNTest(test.TestCase):
         self.assertAlmostEqual(np.mean(normed_np_output), 0., places=1)
         self.assertAlmostEqual(np.std(normed_np_output), 1., places=1)
 
-  @test_util.run_deprecated_v1
   def testNegativeAxis(self):
     epsilon = 1e-3
     bn = normalization_layers.BatchNormalization(
@@ -662,7 +645,6 @@ class BNTest(test.TestCase):
       self.assertAlmostEqual(np.mean(normed_np_output), 0., places=1)
       self.assertAlmostEqual(np.std(normed_np_output), 1., places=1)
 
-  @test_util.run_deprecated_v1
   def testBooleanLearningPhase(self):
     epsilon = 1e-3
     bn = normalization_layers.BatchNormalization(
@@ -703,7 +685,6 @@ class BNTest(test.TestCase):
       self.assertAlmostEqual(np.mean(normed_np_output), 0., places=1)
       self.assertAlmostEqual(np.std(normed_np_output), 1., places=1)
 
-  @test_util.run_deprecated_v1
   def testFunctionalNoReuse(self):
     inputs = variables.Variable(
         np.random.random((5, 4, 3, 6)), dtype=dtypes.float32)
@@ -756,7 +737,6 @@ class BNTest(test.TestCase):
       self.assertAlmostEqual(np.mean(normed_np_output), 0., places=1)
       self.assertAlmostEqual(np.std(normed_np_output), 1., places=1)
 
-  @test_util.run_deprecated_v1
   def testFunctionalReuse(self):
     inputs1 = variables.Variable(
         np.random.random((5, 4, 3, 6)), dtype=dtypes.float32)
@@ -821,7 +801,6 @@ class BNTest(test.TestCase):
       self.assertAlmostEqual(np.mean(normed_np_output), 0., places=2)
       self.assertAlmostEqual(np.std(normed_np_output), 1., places=1)
 
-  @test_util.run_deprecated_v1
   def testFunctionalReuseFromScope(self):
     inputs = variables.Variable(
         np.random.random((5, 4, 3, 6)), dtype=dtypes.float32)
@@ -836,7 +815,6 @@ class BNTest(test.TestCase):
           inputs, axis=-1, momentum=0.9, epsilon=epsilon, training=training)
       self.assertEqual(len(variables.global_variables()), 5)
 
-  @test_util.run_deprecated_v1
   def testNoCenter(self):
     bn = normalization_layers.BatchNormalization(axis=1, center=False)
     inputs = random_ops.random_uniform((5, 4, 3), seed=1)
@@ -852,7 +830,6 @@ class BNTest(test.TestCase):
     self.assertEqual(len(bn.trainable_variables), 1)
     self.assertEqual(len(bn.non_trainable_variables), 2)
 
-  @test_util.run_deprecated_v1
   def testNoScale(self):
     bn = normalization_layers.BatchNormalization(axis=1, scale=False)
     inputs = random_ops.random_uniform((5, 4, 3), seed=1)
@@ -868,7 +845,6 @@ class BNTest(test.TestCase):
     self.assertEqual(len(bn.trainable_variables), 1)
     self.assertEqual(len(bn.non_trainable_variables), 2)
 
-  @test_util.run_deprecated_v1
   def testRegularizers(self):
     reg = lambda x: 0.1 * math_ops.reduce_sum(x)
     bn = normalization_layers.BatchNormalization(axis=1, beta_regularizer=reg)
@@ -894,7 +870,6 @@ class BNTest(test.TestCase):
     self.assertEqual(bn.gamma_constraint, g_constraint)
     self.assertEqual(bn.beta_constraint, b_constraint)
 
-  @test_util.run_deprecated_v1
   def testRenorm(self):
     shape = (4, 3)
     xt = array_ops.placeholder(dtypes.float32, shape)
@@ -919,31 +894,27 @@ class BNTest(test.TestCase):
     yt = bn.apply(xt, training=training)
 
     moving_mean = 0.
-    moving_variance = 1.
-    renorm_mean = renorm_stddev = 0.
-    renorm_weight = 0.
+    moving_stddev = 1.
+    renorm_mean = 0.
+    renorm_stddev = 1.
     with self.session(use_gpu=True) as sess:
       self.evaluate(variables.global_variables_initializer())
       for _ in range(5):
         x = np.random.random(shape)
 
         mean = x.mean(0)
-        stddev = np.sqrt(x.var(0) + epsilon)
-        adj_mean = renorm_mean + (1. - renorm_weight) * mean
-        adj_stddev = renorm_stddev + (1. - renorm_weight) * stddev
-        r = (stddev / adj_stddev).clip(rmin, rmax)
-        d = ((mean - adj_mean) / adj_stddev).clip(-dmax, dmax)
+        variance = x.var(0)
+        stddev = np.sqrt(variance + epsilon)
+        r = (stddev / renorm_stddev).clip(rmin, rmax)
+        d = ((mean - renorm_mean) / renorm_stddev).clip(-dmax, dmax)
         y_train = ((x - mean) / stddev * r + d) * gamma + beta
         renorm_mean += (mean - renorm_mean) * (1. - renorm_momentum)
         renorm_stddev += (stddev - renorm_stddev) * (1. - renorm_momentum)
-        renorm_weight += (1. - renorm_weight) * (1. - renorm_momentum)
-        moving_mean += (renorm_mean / renorm_weight -
-                        moving_mean) * (1. - momentum)
-        moving_variance += ((renorm_stddev / renorm_weight) ** 2 - epsilon -
-                            moving_variance) * (1. - momentum)
+        moving_mean += (mean - moving_mean) * (1. - momentum)
+        moving_stddev += (stddev - moving_stddev) * (1. - momentum)
 
-        y_test = ((x - moving_mean) / (moving_variance + epsilon) ** 0.5 *
-                  gamma) + beta
+        y_test = ((x - moving_mean) /
+                  (moving_stddev * moving_stddev)**0.5 * gamma) + beta
 
         yt_val_train, _, _ = sess.run([yt] + bn.updates,
                                       feed_dict={xt: x, training: True})
@@ -953,7 +924,62 @@ class BNTest(test.TestCase):
         self.assertAllClose(y_train, yt_val_train, atol=1e-5)
         self.assertAllClose(y_test, yt_val_test, atol=1e-5)
 
-  @test_util.run_deprecated_v1
+  def testRenormNoClippingSameMomentumGivesSameTestTrain(self):
+    shape = (4, 3)
+    xt = array_ops.placeholder(dtypes.float32, shape)
+    momentum = 0.9
+    renorm_momentum = 0.9
+    gamma = 2.
+    beta = 3.
+    epsilon = 0.001
+    bn = normalization_layers.BatchNormalization(
+        axis=1,
+        gamma_initializer=init_ops.constant_initializer(gamma),
+        beta_initializer=init_ops.constant_initializer(beta),
+        epsilon=epsilon,
+        momentum=momentum,
+        renorm=True,
+        renorm_clipping=None,
+        renorm_momentum=momentum)
+    training = array_ops.placeholder(dtypes.bool)
+    yt = bn.apply(xt, training=training)
+    moving_mean = 0.
+    moving_stddev = 1.
+    renorm_mean = 0.
+    renorm_stddev = 1.
+    with self.session(use_gpu=True) as sess:
+      self.evaluate(variables.global_variables_initializer())
+      for step in range(6):
+        x = np.random.random(shape)
+
+        mean = x.mean(0)
+        variance = x.var(0)
+        stddev = np.sqrt(variance + epsilon)
+        r = (stddev / renorm_stddev)
+        d = ((mean - renorm_mean) / renorm_stddev)
+        y_test = ((x - moving_mean) /
+                  (moving_stddev * moving_stddev)**0.5 * gamma) + beta
+        y_train = ((x - mean) / stddev * r + d) * gamma + beta
+        renorm_mean += (mean - renorm_mean) * (1. - renorm_momentum)
+        renorm_stddev += (stddev - renorm_stddev) * (1. - renorm_momentum)
+        moving_mean += (mean - moving_mean) * (1. - momentum)
+        moving_stddev += (stddev - moving_stddev) * (1. - momentum)
+
+        # Compute test values first, before the train mode updates the moving
+        # averages.
+        yt_val_test, _, _ = sess.run([yt] + bn.updates,
+                                     feed_dict={xt: x, training: False})
+        yt_val_train, _, _ = sess.run([yt] + bn.updates,
+                                      feed_dict={xt: x, training: True})
+
+        # Due to initialization inconsistencies, values may not be identical
+        # on the first iteration (but shouldn't be different by much more than
+        # epsilon). After the first iteration they should be identical.
+        atol = epsilon * 1.5 if step == 0 else 1e-5
+        self.assertAllClose(y_train, yt_val_train, atol=atol)
+        self.assertAllClose(y_test, yt_val_test, atol=atol)
+        self.assertAllClose(yt_val_train, yt_val_test, atol=atol)
+
   def testAdjustment(self):
     shape = (4, 3)
     xt = array_ops.placeholder(dtypes.float32, shape)
@@ -998,7 +1024,6 @@ class BNTest(test.TestCase):
         self.assertAllClose(y_train, yt_val_train, atol=1e-5)
         self.assertAllClose(y_test, yt_val_test, atol=1e-5)
 
-  @test_util.run_deprecated_v1
   def testRenormWithAdjustment(self):
     shape = (4, 3)
     xt = array_ops.placeholder(dtypes.float32, shape)
@@ -1026,9 +1051,9 @@ class BNTest(test.TestCase):
     yt = bn.apply(xt, training=training)
 
     moving_mean = 0.
-    moving_variance = 1.
-    renorm_mean = renorm_stddev = 0.
-    renorm_weight = 0.
+    moving_stddev = 1.
+    renorm_mean = 0.
+    renorm_stddev = 1.
     with self.session(use_gpu=True) as sess:
       self.evaluate(variables.global_variables_initializer())
       for _ in range(5):
@@ -1040,23 +1065,19 @@ class BNTest(test.TestCase):
                                feed_dict={xt: x, training: False})[0]
 
         mean = x.mean(0)
-        stddev = np.sqrt(x.var(0) + epsilon)
-        adj_mean = renorm_mean + (1. - renorm_weight) * mean
-        adj_stddev = renorm_stddev + (1. - renorm_weight) * stddev
-        r = (stddev / adj_stddev).clip(rmin, rmax)
-        d = ((mean - adj_mean) / adj_stddev).clip(-dmax, dmax)
+        variance = x.var(0)
+        stddev = np.sqrt(variance + epsilon)
+        r = (stddev / renorm_stddev).clip(rmin, rmax)
+        d = ((mean - renorm_mean) / renorm_stddev).clip(-dmax, dmax)
         y_train = (((x - mean) / stddev * r + d) * adj_scale_val +
                    adj_bias_val) * gamma + beta
         renorm_mean += (mean - renorm_mean) * (1. - renorm_momentum)
         renorm_stddev += (stddev - renorm_stddev) * (1. - renorm_momentum)
-        renorm_weight += (1. - renorm_weight) * (1. - renorm_momentum)
-        moving_mean += (renorm_mean / renorm_weight -
-                        moving_mean) * (1. - momentum)
-        moving_variance += ((renorm_stddev / renorm_weight) ** 2 - epsilon -
-                            moving_variance) * (1. - momentum)
+        moving_mean += (mean - moving_mean) * (1. - momentum)
+        moving_stddev += (stddev - moving_stddev) * (1. - momentum)
 
-        y_test = ((x - moving_mean) / (moving_variance + epsilon) ** 0.5 *
-                  gamma) + beta
+        y_test = ((x - moving_mean) /
+                  (moving_stddev * moving_stddev)**0.5 * gamma) + beta
 
         self.assertAllClose(y_train, yt_val_train, atol=1e-5)
         self.assertAllClose(y_test, yt_val_test, atol=1e-5)
@@ -1069,7 +1090,6 @@ class BNTest(test.TestCase):
       normalization_layers.batch_normalization(
           inp, virtual_batch_size=-1)
 
-  @test_util.run_deprecated_v1
   def testGhostBNVirtualBatchFull(self):
     shape = [6, 5, 4, 3]
     inp = random_ops.random_uniform(shape, seed=1)
@@ -1095,7 +1115,6 @@ class BNTest(test.TestCase):
         inp, virtual_batch_size=3)
     self.assertListEqual(out.shape.as_list(), shape)
 
-  @test_util.run_deprecated_v1
   def testGhostBNUnknownBatchSize(self):
     np_shape = [10, 5, 4]
     tf_shape = [None, 5, 4]
@@ -1111,7 +1130,6 @@ class BNTest(test.TestCase):
 
       self.assertListEqual(list(y.shape), np_shape)
 
-  @test_util.run_deprecated_v1
   def testGhostBN2Dims(self):
     shape = [6, 2]
     virtual_batch_size = 3
@@ -1165,7 +1183,6 @@ class BNTest(test.TestCase):
         self.assertAllClose(y_train, y_val_train, atol=1e-5)
         self.assertAllClose(y_test, y_val_test, atol=1e-5)
 
-  @test_util.run_deprecated_v1
   def testGhostBN4DimsAxis3(self):
     shape = [6, 10, 10, 3]
     virtual_batch_size = 2
@@ -1219,7 +1236,6 @@ class BNTest(test.TestCase):
         self.assertAllClose(y_train, y_val_train, atol=1e-2)
         self.assertAllClose(y_test, y_val_test, atol=1e-2)
 
-  @test_util.run_deprecated_v1
   def testGhostBN4DimsAxis1(self):
     shape = [6, 3, 10, 10]
     virtual_batch_size = 2
@@ -1290,7 +1306,6 @@ class BNTest(test.TestCase):
       normalization_layers.batch_normalization(
           inp, axis=[1, 2, 1])   # duplicate
 
-  @test_util.run_deprecated_v1
   def test3DInputMultiAxis12(self):
     epsilon = 1e-3
     bn = normalization_layers.BatchNormalization(
@@ -1332,7 +1347,6 @@ class BNTest(test.TestCase):
       self.assertAlmostEqual(np.mean(normed_np_output), 0., places=1)
       self.assertAlmostEqual(np.std(normed_np_output), 1., places=1)
 
-  @test_util.run_deprecated_v1
   def test5DInputMultiAxis123(self):
     epsilon = 1e-3
     bn = normalization_layers.BatchNormalization(
@@ -1374,7 +1388,6 @@ class BNTest(test.TestCase):
       self.assertAlmostEqual(np.mean(normed_np_output), 0., places=1)
       self.assertAlmostEqual(np.std(normed_np_output), 1., places=1)
 
-  @test_util.run_deprecated_v1
   def testGhostBN5DimsMultiAxis14(self):
     shape = [6, 3, 10, 10, 4]
     virtual_batch_size = 3

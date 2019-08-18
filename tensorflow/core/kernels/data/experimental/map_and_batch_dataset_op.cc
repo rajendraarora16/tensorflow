@@ -12,18 +12,19 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#define EIGEN_USE_THREADS
-
 #include <atomic>
 #include <utility>
 
 #include "tensorflow/core/common_runtime/function.h"
+#include "tensorflow/core/common_runtime/input_colocation_exemption_registry.h"
+#include "tensorflow/core/common_runtime/metrics.h"
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/stats_aggregator.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/kernels/data/captured_function.h"
 #include "tensorflow/core/kernels/data/dataset_utils.h"
+#include "tensorflow/core/kernels/data/stats_utils.h"
 #include "tensorflow/core/kernels/inplace_ops_functor.h"
 #include "tensorflow/core/lib/core/blocking_counter.h"
 #include "tensorflow/core/lib/core/errors.h"
@@ -32,145 +33,84 @@ limitations under the License.
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/cpu_info.h"
 #include "tensorflow/core/platform/tracing.h"
-#include "tensorflow/core/util/ptr_util.h"
 
 namespace tensorflow {
 namespace data {
+namespace experimental {
 namespace {
 
-// Maximum number of batch results to buffer.
-const int64 kMaxBatchResults = 16;
+constexpr char kDatasetName[] = "MapAndBatch";
 
-// See documentation in ../../ops/dataset_ops.cc for a high-level
-// description of the following op.
+// Maximum number of batch results to buffer.
+constexpr int64 kMaxBatchResults = 16;
+
 class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
  public:
-  using MapAndBatchIteratorFunction =
-      std::function<void(IteratorContext*, InstantiatedCapturedFunction*,
-                         const string&, std::vector<Tensor>,
-                         std::shared_ptr<std::vector<Tensor>>, StatusCallback)>;
-
   explicit MapAndBatchDatasetOp(OpKernelConstruction* ctx)
-      : UnaryDatasetOpKernel(ctx),
-        op_version_(ctx->def().op() == "MapAndBatchDataset" ? 1 : 2) {
-    OP_REQUIRES_OK(ctx, ctx->GetAttr("f", &func_));
+      : UnaryDatasetOpKernel(ctx) {
+    FunctionMetadata::Params params;
+    params.is_multi_device_function = true;
+    OP_REQUIRES_OK(ctx,
+                   FunctionMetadata::Create(ctx, "f", params, &func_metadata_));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("output_types", &output_types_));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("output_shapes", &output_shapes_));
+    OP_REQUIRES_OK(
+        ctx, ctx->GetAttr("preserve_cardinality", &preserve_cardinality_));
   }
 
  protected:
   void MakeDataset(OpKernelContext* ctx, DatasetBase* input,
                    DatasetBase** output) override {
-    int64 batch_size;
+    int64 batch_size = 0;
     OP_REQUIRES_OK(ctx, ParseScalarArgument(ctx, "batch_size", &batch_size));
     OP_REQUIRES(
         ctx, batch_size > 0,
         errors::InvalidArgument("batch_size must be greater than zero."));
 
-    int64 num_parallel_calls;
-    switch (op_version_) {
-      case 1:
-        int64 num_parallel_batches;
-        OP_REQUIRES_OK(ctx, ParseScalarArgument(ctx, "num_parallel_batches",
-                                                &num_parallel_batches));
-        num_parallel_calls = num_parallel_batches * batch_size;
-        OP_REQUIRES(ctx, num_parallel_batches > 0,
-                    errors::InvalidArgument(
-                        "num_parallel_batches must be greater than zero."));
-        break;
-      case 2:
-        OP_REQUIRES_OK(ctx, ParseScalarArgument(ctx, "num_parallel_calls",
-                                                &num_parallel_calls));
-        OP_REQUIRES(ctx,
-                    num_parallel_calls > 0 || num_parallel_calls == kAutoTune,
-                    errors::InvalidArgument(
-                        "num_parallel_calls must be greater than zero."));
-        break;
-      default:
-        OP_REQUIRES(ctx, false,
-                    errors::Unimplemented("Unsupported operation version %d.",
-                                          op_version_));
-    }
+    int64 num_parallel_calls = 0;
+    OP_REQUIRES_OK(ctx, ParseScalarArgument(ctx, "num_parallel_calls",
+                                            &num_parallel_calls));
+    OP_REQUIRES(
+        ctx, num_parallel_calls > 0 || num_parallel_calls == model::kAutotune,
+        errors::InvalidArgument(
+            "num_parallel_calls must be greater than zero."));
 
     bool drop_remainder;
     OP_REQUIRES_OK(ctx,
                    ParseScalarArgument(ctx, "drop_remainder", &drop_remainder));
 
     std::unique_ptr<CapturedFunction> captured_func;
-    OP_REQUIRES_OK(ctx, CapturedFunction::Create(func_, ctx, "other_arguments",
-                                                 &captured_func));
+    OP_REQUIRES_OK(
+        ctx, CapturedFunction::Create(ctx, func_metadata_, "other_arguments",
+                                      &captured_func));
 
-    std::vector<int> indices;
-    OP_REQUIRES_OK(ctx, ComputeShortCircuitIndices(ctx, func_, &indices));
-
-    MapAndBatchIteratorFunction map_func;
-    CapturedFunction* raw_captured_func = captured_func.get();
-    if (indices.empty()) {
-      map_func = [](IteratorContext* ctx,
-                    InstantiatedCapturedFunction* instantiated_captured_func,
-                    const string& prefix, std::vector<Tensor> args,
-                    std::shared_ptr<std::vector<Tensor>> out_tensors,
-                    StatusCallback done) {
-        instantiated_captured_func->RunAsync(
-            ctx, std::move(args), out_tensors.get(), std::move(done), prefix);
-      };
-    } else {
-      std::vector<bool> can_move = ComputeMoveVector(indices);
-      map_func = [raw_captured_func, indices, can_move](
-                     IteratorContext* ctx,
-                     InstantiatedCapturedFunction* instantiated_captured_func,
-                     const string& prefix, std::vector<Tensor> args,
-                     std::shared_ptr<std::vector<Tensor>> out_tensors,
-                     StatusCallback done) {
-        const std::vector<Tensor>& captured_inputs =
-            raw_captured_func->captured_inputs();
-        size_t num_args = args.size();
-        for (size_t i = 0; i < indices.size(); ++i) {
-          if (indices[i] < num_args) {
-            if (can_move[i]) {
-              out_tensors->push_back(std::move(args[indices[i]]));
-            } else {
-              out_tensors->push_back(args[indices[i]]);
-            }
-          } else {
-            out_tensors->push_back(captured_inputs[indices[i] - num_args]);
-          }
-        }
-        // Run the `done` callback on a threadpool thread, because it will
-        // potentially do a lot of copying work, and we want to run that
-        // concurrently with the next invocation.
-        (*ctx->runner())(std::bind(std::move(done), Status::OK()));
-      };
+    if (num_parallel_calls == model::kAutotune) {
+      metrics::RecordTFDataAutotune(kDatasetName);
     }
 
-    *output = new Dataset(ctx, input, func_, batch_size, num_parallel_calls,
+    *output = new Dataset(ctx, input, batch_size, num_parallel_calls,
                           drop_remainder, output_types_, output_shapes_,
-                          std::move(captured_func), &ctx->eigen_cpu_device(),
-                          std::move(map_func));
+                          std::move(captured_func), preserve_cardinality_);
   }
 
  private:
   class Dataset : public DatasetBase {
    public:
-    Dataset(OpKernelContext* ctx, const DatasetBase* input,
-            const NameAttrList& func, int64 batch_size,
+    Dataset(OpKernelContext* ctx, const DatasetBase* input, int64 batch_size,
             int64 num_parallel_calls, bool drop_remainder,
             const DataTypeVector& output_types,
             const std::vector<PartialTensorShape>& output_shapes,
             std::unique_ptr<CapturedFunction> captured_func,
-            const Eigen::ThreadPoolDevice* device,
-            MapAndBatchIteratorFunction map_func)
+            bool preserve_cardinality)
         : DatasetBase(DatasetContext(ctx)),
           input_(input),
-          func_(func),
           batch_size_(batch_size),
           num_parallel_calls_(num_parallel_calls),
           drop_remainder_(drop_remainder),
           output_types_(output_types),
           output_shapes_(output_shapes),
           captured_func_(std::move(captured_func)),
-          device_(device),
-          map_func_(std::move(map_func)) {
+          preserve_cardinality_(preserve_cardinality) {
       input_->Ref();
     }
 
@@ -178,9 +118,8 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
         const string& prefix) const override {
-      return MakeUnique<Iterator>(
-          Iterator::Params{this, strings::StrCat(prefix, "::MapAndBatch")},
-          map_func_);
+      return absl::make_unique<Iterator>(
+          Iterator::Params{this, strings::StrCat(prefix, "::", kDatasetName)});
     }
 
     const DataTypeVector& output_dtypes() const override {
@@ -195,11 +134,24 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
       return "MapAndBatchDatasetOp::Dataset";
     }
 
+    int64 Cardinality() const override {
+      int64 n = input_->Cardinality();
+      if (n == kInfiniteCardinality || n == kUnknownCardinality) {
+        return n;
+      }
+      return n / batch_size_ +
+             (n % batch_size_ == 0 || drop_remainder_ ? 0 : 1);
+    }
+
+    Status CheckExternalState() const override {
+      TF_RETURN_IF_ERROR(captured_func_->CheckExternalState());
+      return input_->CheckExternalState();
+    }
+
    protected:
     Status AsGraphDefInternal(SerializationContext* ctx,
                               DatasetGraphDefBuilder* b,
                               Node** output) const override {
-      TF_RETURN_IF_ERROR(b->AddFunction(ctx, func_.name()));
       Node* input_graph_node = nullptr;
       TF_RETURN_IF_ERROR(b->AddInputDataset(ctx, input_, &input_graph_node));
       Node* batch_size_node;
@@ -209,21 +161,16 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
           b->AddScalar(num_parallel_calls_, &num_parallel_calls_node));
       Node* drop_remainder_node;
       TF_RETURN_IF_ERROR(b->AddScalar(drop_remainder_, &drop_remainder_node));
-
-      DataTypeVector other_arguments_types;
-      other_arguments_types.reserve(captured_func_->captured_inputs().size());
       std::vector<Node*> other_arguments;
-      other_arguments.reserve(captured_func_->captured_inputs().size());
-      for (const Tensor& t : captured_func_->captured_inputs()) {
-        Node* node;
-        TF_RETURN_IF_ERROR(b->AddTensor(t, &node));
-        other_arguments.emplace_back(node);
-        other_arguments_types.emplace_back(t.dtype());
-      }
+      DataTypeVector other_arguments_types;
+      TF_RETURN_IF_ERROR(captured_func_->AddToGraph(ctx, b, &other_arguments,
+                                                    &other_arguments_types));
       AttrValue f;
-      b->BuildAttrValue(func_, &f);
+      b->BuildAttrValue(captured_func_->func(), &f);
       AttrValue other_arguments_types_attr;
       b->BuildAttrValue(other_arguments_types, &other_arguments_types_attr);
+      AttrValue preserve_cardinality_attr;
+      b->BuildAttrValue(preserve_cardinality_, &preserve_cardinality_attr);
 
       TF_RETURN_IF_ERROR(b->AddDataset(
           this,
@@ -233,7 +180,9 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
            std::make_pair(4, drop_remainder_node)},  // Single tensor inputs.
           {std::make_pair(1, other_arguments)},      // Tensor list inputs.
           {std::make_pair("f", f),
-           std::make_pair("Targuments", other_arguments_types_attr)},  // Attrs
+           std::make_pair("Targuments", other_arguments_types_attr),
+           std::make_pair("preserve_cardinality",
+                          preserve_cardinality_attr)},  // Attrs
           output));
       return Status::OK();
     }
@@ -241,22 +190,16 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
    private:
     class Iterator : public DatasetIterator<Dataset> {
      public:
-      explicit Iterator(const Params& params,
-                        MapAndBatchIteratorFunction map_func)
+      explicit Iterator(const Params& params)
           : DatasetIterator<Dataset>(params),
             mu_(std::make_shared<mutex>()),
             cond_var_(std::make_shared<condition_variable>()),
             num_parallel_calls_(std::make_shared<model::SharedState>(
                 params.dataset->num_parallel_calls_, mu_, cond_var_)),
-            map_func_(std::move(map_func)),
             max_batch_results_(std::min(kMaxBatchResults,
                                         (params.dataset->num_parallel_calls_ +
                                          params.dataset->batch_size_ - 1) /
-                                            params.dataset->batch_size_)) {
-        std::vector<string> components =
-            str_util::Split(params.prefix, "::", str_util::SkipEmpty());
-        prefix_end_ = components.back();
-      }
+                                            params.dataset->batch_size_)) {}
 
       ~Iterator() override {
         mutex_lock l(*mu_);
@@ -269,11 +212,17 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
         }
       }
 
+      string BuildTraceMeName() override {
+        // NOTE: We do not synchronize the following access to
+        // num_parallel_calls_ to minimize the tracing overhead.
+        int64 parallelism = num_parallel_calls_->value;
+        return strings::StrCat(prefix(), "#parallelism=", parallelism, "#");
+      }
+
       Status Initialize(IteratorContext* ctx) override {
         mutex_lock l(*mu_);
-        if (num_parallel_calls_->value == kAutoTune) {
+        if (num_parallel_calls_->value == model::kAutotune) {
           num_parallel_calls_->value = ctx->runner_threadpool_size();
-          num_parallel_calls_->tunable = true;
         }
         TF_RETURN_IF_ERROR(
             dataset()->input_->MakeIterator(ctx, prefix(), &input_impl_));
@@ -346,7 +295,7 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
       }
 
      private:
-      // BatchResult encapsulates the output batch, as well as anciliary
+      // BatchResult encapsulates the output batch, as well as ancillary
       // metadata required to execute the fused map-and-batch operation.
       struct BatchResult {
         explicit BatchResult(int64 batch_size) {
@@ -394,8 +343,10 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
         const auto& stats_aggregator = ctx->stats_aggregator();
         if (stats_aggregator) {
           stats_aggregator->AddScalar(
-              strings::StrCat(prefix_end_, "::active_parallel_calls"),
-              static_cast<float>(num_calls_));
+              stats_utils::ThreadUtilizationScalarName(dataset()->node_name()),
+              static_cast<float>(num_calls_) /
+                  static_cast<float>(num_parallel_calls_->value),
+              num_elements());
         }
         cond_var_->notify_all();
       }
@@ -423,6 +374,15 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
         std::shared_ptr<std::vector<Tensor>> return_values =
             std::make_shared<std::vector<Tensor>>();
         auto done = [this, ctx, result, return_values, offset](Status status) {
+          if (dataset()->preserve_cardinality_ &&
+              errors::IsOutOfRange(status)) {
+            // To guarantee that the transformation preserves the cardinality of
+            // the dataset, we convert `OutOfRange` to `InvalidArgument` as the
+            // former may be interpreted by a caller as the end of sequence.
+            status = errors::InvalidArgument(
+                "Function invocation produced OutOfRangeError: ",
+                status.error_message());
+          }
           result->UpdateStatus(status, offset);
           if (status.ok()) {
             Status allocate_status =
@@ -431,7 +391,7 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
               result->UpdateStatus(allocate_status, offset);
             } else {
               for (size_t i = 0; i < return_values->size(); ++i) {
-                const Tensor& tensor = return_values->at(i);
+                Tensor& tensor = return_values->at(i);
                 Tensor* batch = &(result->output)[i];
                 if (tensor.NumElements() !=
                     (batch->NumElements() / batch->dim_size(0))) {
@@ -449,8 +409,8 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
                 // TODO(mrry): Add a version of DoParallelConcat that allows us
                 // to move `tensor` where possible, to speed up string tensor
                 // batching.
-                Status copy_status = ::tensorflow::functor::DoParallelConcat(
-                    *dataset()->device_, tensor, offset, batch);
+                Status copy_status = batch_util::CopyElementToSlice(
+                    std::move(tensor), batch, offset);
                 if (!copy_status.ok()) {
                   result->UpdateStatus(copy_status, offset);
                   break;
@@ -467,9 +427,9 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
 
         // Apply the map function on `input_element`, storing the result in
         // `return_values`, and invoking `done` when finished.
-        map_func_(ctx.get(), instantiated_captured_func_.get(), prefix(),
-                  std::move(input_element), std::move(return_values),
-                  std::move(done));
+        instantiated_captured_func_->RunAsync(
+            ctx.get(), std::move(input_element), return_values.get(),
+            std::move(done), prefix());
       }
 
       Status CopyPartialBatch(Tensor* output, const Tensor& value,
@@ -497,9 +457,9 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
           EXCLUSIVE_LOCKS_REQUIRED(*mu_) {
         if (!runner_thread_) {
           auto ctx_copy = std::make_shared<IteratorContext>(*ctx);
-          runner_thread_.reset(ctx->env()->StartThread(
-              {}, "tf_data_map_and_batch",
-              std::bind(&Iterator::RunnerThread, this, ctx_copy)));
+          runner_thread_ = ctx->StartThread(
+              "tf_data_map_and_batch",
+              std::bind(&Iterator::RunnerThread, this, ctx_copy));
         }
       }
 
@@ -535,11 +495,14 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
                            bool* end_of_sequence) {
         mutex_lock l(result->mu);
         if (result->num_elements == 0) {
-          *end_of_sequence = true;
-          return Status::OK();
+          if (result->status.ok() || errors::IsOutOfRange(result->status)) {
+            *end_of_sequence = true;
+            return Status::OK();
+          } else {
+            *end_of_sequence = false;
+            return result->status;
+          }
         }
-        // `f` may deliberately raise `errors::OutOfRange` to indicate that we
-        // should terminate the iteration early.
         if (!result->status.ok() && !errors::IsOutOfRange(result->status)) {
           // Deallocate tensors allocated for the output.
           result->output.clear();
@@ -569,7 +532,7 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
         } else {
           *out_tensors = std::move(result->output);
         }
-        *end_of_sequence = result->num_elements == 0;
+        *end_of_sequence = false;
         return Status::OK();
       }
 
@@ -622,18 +585,15 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
               num_calls_++;
             }
           }
-          const std::shared_ptr<StatsAggregator>& stats_aggregator =
-              ctx->stats_aggregator();
+          const auto& stats_aggregator = ctx->stats_aggregator();
           if (stats_aggregator) {
             mutex_lock l(*mu_);
-            // TODO(shivaniagrawal): add `parallel_calls_utilization` in the
-            // monitoring code or as histogram at fixed time intervals.
             stats_aggregator->AddScalar(
-                strings::StrCat(prefix_end_, "::active_parallel_calls"),
-                static_cast<float>(num_calls_));
-            stats_aggregator->AddScalar(
-                strings::StrCat(prefix_end_, "::num_parallel_calls"),
-                static_cast<float>(num_parallel_calls_->value));
+                stats_utils::ThreadUtilizationScalarName(
+                    dataset()->node_name()),
+                static_cast<float>(num_calls_) /
+                    static_cast<float>(num_parallel_calls_->value),
+                num_elements());
           }
           for (const auto& call : new_calls) {
             CallFunction(ctx, call.first, call.second);
@@ -771,7 +731,6 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
       const std::shared_ptr<condition_variable> cond_var_;
       // Identifies the maximum number of parallel calls.
       const std::shared_ptr<model::SharedState> num_parallel_calls_;
-      const MapAndBatchIteratorFunction map_func_;
 
       // Counts the number of outstanding calls for this batch.
       int64 num_calls_ GUARDED_BY(*mu_) = 0;
@@ -788,32 +747,35 @@ class MapAndBatchDatasetOp : public UnaryDatasetOpKernel {
       int64 waiting_ GUARDED_BY(*mu_) = 0;
       // Identifies the maximum number of batch results to store.
       int64 max_batch_results_ GUARDED_BY(*mu_);
-      string prefix_end_;
       std::unique_ptr<InstantiatedCapturedFunction> instantiated_captured_func_;
     };
 
     const DatasetBase* const input_;
-    const NameAttrList func_;
     const int64 batch_size_;
     const int64 num_parallel_calls_;
     const bool drop_remainder_;
     const DataTypeVector output_types_;
     const std::vector<PartialTensorShape> output_shapes_;
     const std::unique_ptr<CapturedFunction> captured_func_;
-    const Eigen::ThreadPoolDevice* device_;  // not owned
-    const MapAndBatchIteratorFunction map_func_;
+    const bool preserve_cardinality_;
   };
 
-  const int op_version_;
+  std::shared_ptr<FunctionMetadata> func_metadata_ = nullptr;
   DataTypeVector output_types_;
   std::vector<PartialTensorShape> output_shapes_;
-  NameAttrList func_;
+  bool preserve_cardinality_;
 };
 
+REGISTER_KERNEL_BUILDER(Name("MapAndBatchDataset").Device(DEVICE_CPU),
+                        MapAndBatchDatasetOp);
 REGISTER_KERNEL_BUILDER(
     Name("ExperimentalMapAndBatchDataset").Device(DEVICE_CPU),
     MapAndBatchDatasetOp);
 
+REGISTER_INPUT_COLOCATION_EXEMPTION("MapAndBatchDataset");
+REGISTER_INPUT_COLOCATION_EXEMPTION("ExperimentalMapAndBatchDataset");
+
 }  // namespace
+}  // namespace experimental
 }  // namespace data
 }  // namespace tensorflow

@@ -18,6 +18,9 @@
 - Builds images (and optionally runs image tests)
 - Pushes images to Docker Hub (provided with credentials)
 
+Logs are written to stderr; the list of successfully built images is
+written to stdout.
+
 Read README.md (in this directory) for instructions!
 """
 
@@ -29,8 +32,10 @@ import collections
 import copy
 import errno
 import itertools
+import json
 import multiprocessing
 import os
+import platform
 import re
 import shutil
 import sys
@@ -49,7 +54,7 @@ flags.DEFINE_string('hub_username', None,
 flags.DEFINE_string(
     'hub_password', None,
     ('Dockerhub password, only used with --upload_to_hub. Use from an env param'
-     'so your password isn\'t in your history.'))
+     ' so your password isn\'t in your history.'))
 
 flags.DEFINE_integer('hub_timeout', 3600,
                      'Abort Hub upload if it takes longer than this.')
@@ -142,6 +147,10 @@ flags.DEFINE_multi_string(
      'args will print a warning).'),
     short_name='a')
 
+flags.DEFINE_boolean(
+    'nocache', False,
+    'Disable the Docker build cache; identical to "docker build --no-cache"')
+
 flags.DEFINE_string(
     'spec_file',
     './spec.yml',
@@ -153,6 +162,7 @@ flags.DEFINE_string(
 # Note: can add python references with e.g.
 # !!python/name:builtins.str
 # !!python/name:__main__.funcname
+# (but this may not be considered safe?)
 SCHEMA_TEXT = """
 header:
   type: string
@@ -169,6 +179,8 @@ slice_sets:
            add_to_name:
              type: string
            dockerfile_exclusive_name:
+             type: string
+           dockerfile_subdirectory:
              type: string
            partials:
              type: list
@@ -329,7 +341,7 @@ def get_slice_sets_and_required_args(slice_sets, tag_spec):
 
 def gather_tag_args(slices, cli_input_args, required_args):
   """Build a dictionary of all the CLI and slice-specified args for a tag."""
-  args = dict()
+  args = {}
 
   for s in slices:
     args = update_args_dict(args, s['args'])
@@ -353,8 +365,9 @@ def gather_slice_list_items(slices, key):
 def find_first_slice_value(slices, key):
   """For a list of slices, get the first value for a certain key."""
   for s in slices:
-    if key in s:
+    if key in s and s[key] is not None:
       return s[key]
+  return None
 
 
 def assemble_tags(spec, cli_args, enabled_releases, all_partials):
@@ -389,6 +402,8 @@ def assemble_tags(spec, cli_args, enabled_releases, all_partials):
         used_partials = gather_slice_list_items(slices, 'partials')
         used_tests = gather_slice_list_items(slices, 'tests')
         test_runtime = find_first_slice_value(slices, 'test_runtime')
+        dockerfile_subdirectory = find_first_slice_value(
+            slices, 'dockerfile_subdirectory')
         dockerfile_contents = merge_partials(spec['header'], used_partials,
                                              all_partials)
 
@@ -398,6 +413,7 @@ def assemble_tags(spec, cli_args, enabled_releases, all_partials):
             'is_dockerfiles': release['is_dockerfiles'],
             'upload_images': release['upload_images'],
             'cli_args': tag_args,
+            'dockerfile_subdirectory': dockerfile_subdirectory or '',
             'partials': used_partials,
             'tests': used_tests,
             'test_runtime': test_runtime,
@@ -416,8 +432,7 @@ def merge_partials(header, used_partials, all_partials):
 def upload_in_background(hub_repository, dock, image, tag):
   """Upload a docker image (to be used by multiprocessing)."""
   image.tag(hub_repository, tag=tag)
-  for line in list(dock.images.push(hub_repository, tag=tag, stream=True)):
-    print(line)
+  print(dock.images.push(hub_repository, tag=tag))
 
 
 def mkdir_p(path):
@@ -439,7 +454,7 @@ def gather_existing_partials(partial_path):
     Dict[string, string] of partial short names (like "ubuntu/python" or
       "bazel") to the full contents of that partial.
   """
-  partials = dict()
+  partials = {}
   for path, _, files in os.walk(partial_path):
     for name in files:
       fullpath = os.path.join(path, name)
@@ -461,13 +476,13 @@ def main(argv):
 
   # Read the full spec file, used for everything
   with open(FLAGS.spec_file, 'r') as spec_file:
-    tag_spec = yaml.load(spec_file)
+    tag_spec = yaml.safe_load(spec_file)
 
   # Get existing partial contents
   partials = gather_existing_partials(FLAGS.partial_dir)
 
   # Abort if spec.yaml is invalid
-  schema = yaml.load(SCHEMA_TEXT)
+  schema = yaml.safe_load(SCHEMA_TEXT)
   v = TfDockerTagValidator(schema, partials=partials)
   if not v.validate(tag_spec):
     eprint('> Error: {} is an invalid spec! The errors are:'.format(
@@ -508,6 +523,7 @@ def main(argv):
   # Each tag has a name ('tag') and a definition consisting of the contents
   # of its Dockerfile, its build arg list, etc.
   failed_tags = []
+  succeeded_tags = []
   for tag, tag_defs in all_tags.items():
     for tag_def in tag_defs:
       eprint('> Working on {}'.format(tag))
@@ -525,16 +541,25 @@ def main(argv):
         continue
 
       # Write releases marked "is_dockerfiles" into the Dockerfile directory
-      if FLAGS.construct_dockerfiles:
-        path = os.path.join(FLAGS.dockerfile_dir, tag + '.Dockerfile')
-        if tag_def['is_dockerfiles']:
-          eprint('>> Writing {}...'.format(path))
-          if not FLAGS.dry_run:
-            with open(path, 'w') as f:
-              f.write(tag_def['dockerfile_contents'])
+      if FLAGS.construct_dockerfiles and tag_def['is_dockerfiles']:
+        path = os.path.join(FLAGS.dockerfile_dir,
+                            tag_def['dockerfile_subdirectory'],
+                            tag + '.Dockerfile')
+        eprint('>> Writing {}...'.format(path))
+        if not FLAGS.dry_run:
+          mkdir_p(os.path.dirname(path))
+          with open(path, 'w') as f:
+            f.write(tag_def['dockerfile_contents'])
 
       # Don't build any images for dockerfile-only releases
       if not FLAGS.build_images:
+        continue
+
+      # Only build images for host architecture
+      proc_arch = platform.processor()
+      is_x86 = proc_arch.startswith('x86')
+      if (is_x86 and any([arch in tag for arch in ['ppc64le']]) or
+          not is_x86 and proc_arch not in tag):
         continue
 
       # Generate a temporary Dockerfile to use to build, since docker-py
@@ -559,16 +584,42 @@ def main(argv):
       image, logs = None, []
       if not FLAGS.dry_run:
         try:
-          image, logs = dock.images.build(
+          # Use low level APIClient in order to stream log output
+          resp = dock.api.build(
               timeout=FLAGS.hub_timeout,
               path='.',
+              nocache=FLAGS.nocache,
               dockerfile=dockerfile,
               buildargs=tag_def['cli_args'],
               tag=repo_tag)
-
-          # Print logs after finishing
-          log_lines = [l.get('stream', '') for l in logs]
-          eprint(''.join(log_lines))
+          last_event = None
+          image_id = None
+          # Manually process log output extracting build success and image id
+          # in order to get built image
+          while True:
+            try:
+              output = next(resp).decode('utf-8')
+              json_output = json.loads(output.strip('\r\n'))
+              if 'stream' in json_output:
+                eprint(json_output['stream'], end='')
+                match = re.search(r'(^Successfully built |sha256:)([0-9a-f]+)$',
+                                  json_output['stream'])
+                if match:
+                  image_id = match.group(2)
+                last_event = json_output['stream']
+                # collect all log lines into the logs object
+                logs.append(json_output)
+            except StopIteration:
+              eprint('Docker image build complete.')
+              break
+            except ValueError:
+              eprint('Error parsing from docker image build: {}'.format(output))
+          # If Image ID is not set, the image failed to built properly. Raise
+          # an error in this case with the last log line and all logs
+          if image_id:
+            image = dock.images.get(image_id)
+          else:
+            raise docker.errors.BuildError(last_event or 'Unknown', logs)
 
           # Run tests if requested, and dump output
           # Could be improved by backgrounding, but would need better
@@ -649,11 +700,19 @@ def main(argv):
               args=(FLAGS.hub_repository, dock, image, tag))
           p.start()
 
+      if not tag_failed:
+        succeeded_tags.append(tag)
+
   if failed_tags:
     eprint(
         '> Some tags failed to build or failed testing, check scrollback for '
         'errors: {}'.format(','.join(failed_tags)))
     exit(1)
+
+  eprint('> Writing built{} tags to standard out.'.format(
+      ' and tested' if FLAGS.run_tests_path else ''))
+  for tag in succeeded_tags:
+    print('{}:{}'.format(FLAGS.repository, tag))
 
 
 if __name__ == '__main__':

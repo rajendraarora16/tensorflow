@@ -54,8 +54,12 @@ class GuessIsTensorFlowLibraryTest(test_util.TensorFlowTestCase):
     ops.reset_default_graph()
 
   def testGuessedBaseDirIsProbablyCorrect(self):
-    self.assertEqual("tensorflow",
-                     os.path.basename(source_utils._TENSORFLOW_BASEDIR))
+    # In the non-pip world, code resides in "tensorflow/"
+    # In the pip world, after virtual pip, code resides in "tensorflow_core/"
+    # So, we have to check both of them
+    self.assertIn(
+        os.path.basename(source_utils._TENSORFLOW_BASEDIR),
+        ["tensorflow", "tensorflow_core"])
 
   def testUnitTestFileReturnsFalse(self):
     self.assertFalse(
@@ -216,6 +220,7 @@ class SourceHelperTest(test_util.TensorFlowTestCase):
     os.remove(unrelated_source_path)
 
 
+@test_util.run_v1_only("b/120545219")
 class ListSourceAgainstDumpTest(test_util.TensorFlowTestCase):
 
   def createAndRunGraphWithWhileLoop(self):

@@ -12,7 +12,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-
 #include <deque>
 #include <vector>
 
@@ -24,10 +23,8 @@ limitations under the License.
 
 namespace tensorflow {
 namespace data {
+namespace experimental {
 namespace {
-
-// See documentation in ../../ops/dataset_ops.cc for a high-level
-// description of the following op.
 
 class SlidingWindowDatasetOp : public UnaryDatasetOpKernel {
  public:
@@ -86,8 +83,8 @@ class SlidingWindowDatasetOp : public UnaryDatasetOpKernel {
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
         const string& prefix) const override {
-      return std::unique_ptr<IteratorBase>(new Iterator(
-          Iterator::Params{this, strings::StrCat(prefix, "::Slide")}));
+      return absl::make_unique<Iterator>(
+          Iterator::Params{this, strings::StrCat(prefix, "::Slide")});
     }
 
     const DataTypeVector& output_dtypes() const override {
@@ -101,6 +98,18 @@ class SlidingWindowDatasetOp : public UnaryDatasetOpKernel {
     string DebugString() const override {
       return strings::StrCat("SlidingWindowDatasetOp(", window_size_, ", ",
                              window_shift_, ", ", window_stride_, ")::Dataset");
+    }
+
+    int64 Cardinality() const override {
+      int64 n = input_->Cardinality();
+      if (n == kInfiniteCardinality || n == kUnknownCardinality) {
+        return n;
+      }
+      return n / window_shift_;
+    }
+
+    Status CheckExternalState() const override {
+      return input_->CheckExternalState();
     }
 
    protected:
@@ -260,7 +269,7 @@ class SlidingWindowDatasetOp : public UnaryDatasetOpKernel {
           input_impl_.reset();
         }
         // Restore buffer.
-        int64 buffer_size;
+        int64 buffer_size = 0;
         TF_RETURN_IF_ERROR(
             reader->ReadScalar(strings::StrCat("buffer_size"), &buffer_size));
         buffer_.resize(buffer_size);
@@ -295,10 +304,13 @@ class SlidingWindowDatasetOp : public UnaryDatasetOpKernel {
   };
 };
 
+REGISTER_KERNEL_BUILDER(Name("SlidingWindowDataset").Device(DEVICE_CPU),
+                        SlidingWindowDatasetOp);
 REGISTER_KERNEL_BUILDER(
     Name("ExperimentalSlidingWindowDataset").Device(DEVICE_CPU),
     SlidingWindowDatasetOp);
 
 }  // namespace
+}  // namespace experimental
 }  // namespace data
 }  // namespace tensorflow

@@ -12,9 +12,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-
-#include "tensorflow/core/example/example.pb.h"
-#include "tensorflow/core/example/feature.pb.h"
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/stats_aggregator.h"
@@ -23,6 +20,7 @@ limitations under the License.
 
 namespace tensorflow {
 namespace data {
+namespace experimental {
 namespace {
 
 // This op defines a `Dataset` that passes through its input elements and
@@ -63,8 +61,8 @@ class LatencyStatsDatasetOp : public UnaryDatasetOpKernel {
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
         const string& prefix) const override {
-      return std::unique_ptr<IteratorBase>(
-          new Iterator({this, strings::StrCat(prefix, "::LatencyStats")}));
+      return absl::make_unique<Iterator>(
+          Iterator::Params{this, strings::StrCat(prefix, "::LatencyStats")});
     }
 
     const DataTypeVector& output_dtypes() const override {
@@ -76,6 +74,12 @@ class LatencyStatsDatasetOp : public UnaryDatasetOpKernel {
 
     string DebugString() const override {
       return "LatencyStatsDatasetOp::Dataset";
+    }
+
+    int64 Cardinality() const override { return input_->Cardinality(); }
+
+    Status CheckExternalState() const override {
+      return input_->CheckExternalState();
     }
 
    protected:
@@ -109,8 +113,9 @@ class LatencyStatsDatasetOp : public UnaryDatasetOpKernel {
         uint64 end = ctx->env()->NowMicros();
         auto stats_aggregator = ctx->stats_aggregator();
         if (stats_aggregator && !*end_of_sequence) {
-          ctx->stats_aggregator()->AddToHistogram(
-              dataset()->tag_, {static_cast<double>(end - start)});
+          int64 steps = num_elements();
+          stats_aggregator->AddToHistogram(
+              dataset()->tag_, {static_cast<double>(end - start)}, steps);
         }
         return s;
       }
@@ -171,8 +176,8 @@ class BytesProducedStatsDatasetOp : public UnaryDatasetOpKernel {
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
         const string& prefix) const override {
-      return std::unique_ptr<IteratorBase>(new Iterator(
-          {this, strings::StrCat(prefix, "::BytesProducedStats")}));
+      return absl::make_unique<Iterator>(Iterator::Params{
+          this, strings::StrCat(prefix, "::BytesProducedStats")});
     }
 
     const DataTypeVector& output_dtypes() const override {
@@ -184,6 +189,12 @@ class BytesProducedStatsDatasetOp : public UnaryDatasetOpKernel {
 
     string DebugString() const override {
       return "BytesProducedStatsDatasetOp::Dataset";
+    }
+
+    int64 Cardinality() const override { return input_->Cardinality(); }
+
+    Status CheckExternalState() const override {
+      return input_->CheckExternalState();
     }
 
    protected:
@@ -219,8 +230,9 @@ class BytesProducedStatsDatasetOp : public UnaryDatasetOpKernel {
           for (const Tensor& t : *out_tensors) {
             total_bytes += t.TotalBytes();
           }
-          ctx->stats_aggregator()->AddToHistogram(
-              dataset()->tag_, {static_cast<double>(total_bytes)});
+          int64 steps = num_elements();
+          stats_aggregator->AddToHistogram(
+              dataset()->tag_, {static_cast<double>(total_bytes)}, steps);
         }
         return s;
       }
@@ -255,13 +267,19 @@ class BytesProducedStatsDatasetOp : public UnaryDatasetOpKernel {
   };
 };
 
-REGISTER_KERNEL_BUILDER(
-    Name("ExperimentalLatencyStatsDataset").Device(DEVICE_CPU),
-    LatencyStatsDatasetOp);
+REGISTER_KERNEL_BUILDER(Name("BytesProducedStatsDataset").Device(DEVICE_CPU),
+                        BytesProducedStatsDatasetOp);
 REGISTER_KERNEL_BUILDER(
     Name("ExperimentalBytesProducedStatsDataset").Device(DEVICE_CPU),
     BytesProducedStatsDatasetOp);
 
+REGISTER_KERNEL_BUILDER(Name("LatencyStatsDataset").Device(DEVICE_CPU),
+                        LatencyStatsDatasetOp);
+REGISTER_KERNEL_BUILDER(
+    Name("ExperimentalLatencyStatsDataset").Device(DEVICE_CPU),
+    LatencyStatsDatasetOp);
+
 }  // namespace
+}  // namespace experimental
 }  // namespace data
 }  // namespace tensorflow

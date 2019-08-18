@@ -19,20 +19,27 @@ from __future__ import division
 from __future__ import print_function
 
 import os
+import re
 
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import error_interpolation
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import test_util
 from tensorflow.python.framework import traceable_stack
+from tensorflow.python.ops import math_ops
 from tensorflow.python.platform import test
 from tensorflow.python.util import tf_stack
 
 
 def _make_frame_with_filename(op, idx, filename):
   """Return a copy of an existing stack frame with a new filename."""
-  stack_frame = list(op._traceback[idx])
-  stack_frame[tf_stack.TB_FILENAME] = filename
-  return tuple(stack_frame)
+  frame = op._traceback[idx]
+  return tf_stack.StackFrame(
+      filename,
+      frame.lineno,
+      frame.name,
+      frame.globals,
+      frame.func_start_lineno)
 
 
 def _modify_op_stack_with_filenames(op, num_user_frames, user_filename,
@@ -112,6 +119,7 @@ class ComputeColocationSummaryFromOpTest(test.TestCase):
     self.assertIn("No node-device colocations", summary)
 
 
+@test_util.run_deprecated_v1
 class InterpolateFilenamesAndLineNumbersTest(test.TestCase):
 
   def setUp(self):
@@ -193,6 +201,45 @@ class InterpolateFilenamesAndLineNumbersTest(test.TestCase):
     self.assertRegexpMatches(interpolated_string, "constant_op.py:[0-9]+.*")
 
 
+@test_util.run_deprecated_v1
+class InputNodesTest(test.TestCase):
+
+  def setUp(self):
+    # Add nodes to the graph for retrieval by name later.
+    one = constant_op.constant(1, name="One")
+    two = constant_op.constant(2, name="Two")
+    three = math_ops.add(one, two, name="Three")
+    self.graph = three.graph
+
+    # Change the list of bad file substrings so that constant_op.py is chosen
+    # as the defining stack frame for constant_op.constant ops.
+    self.old_bad_strings = error_interpolation._BAD_FILE_SUBSTRINGS
+    error_interpolation._BAD_FILE_SUBSTRINGS = [
+        "%sops.py" % os.sep,
+        "%sutil" % os.sep,
+    ]
+
+  def tearDown(self):
+    error_interpolation._BAD_FILE_SUBSTRINGS = self.old_bad_strings
+
+  def testNoInputs(self):
+    two_tags_with_seps = ";;;{{node One}},,,{{node Two}};;;"
+    interpolated_string = error_interpolation.interpolate(
+        two_tags_with_seps, self.graph)
+    expected_regex = (
+        r"^;;;.*constant_op.py:[0-9]+\) ,,,.*constant_op.py:[0-9]+\) ;;;$")
+    self.assertRegexpMatches(interpolated_string, expected_regex)
+
+  def testBasicInputs(self):
+    tag = ";;;{{node Three}};;;"
+    interpolated_string = error_interpolation.interpolate(tag, self.graph)
+    expected_regex = re.compile(
+        r"^;;;.*op_def_library.py:[0-9]+\) ;;;.*Input.*constant_op.py:[0-9]+\)",
+        re.DOTALL)
+    self.assertRegexpMatches(interpolated_string, expected_regex)
+
+
+@test_util.run_deprecated_v1
 class InterpolateDeviceSummaryTest(test.TestCase):
 
   def _fancy_device_function(self, unused_op):
@@ -236,6 +283,7 @@ class InterpolateDeviceSummaryTest(test.TestCase):
     self.assertRegexpMatches(result, expected_re)
 
 
+@test_util.run_deprecated_v1
 class InterpolateColocationSummaryTest(test.TestCase):
 
   def setUp(self):

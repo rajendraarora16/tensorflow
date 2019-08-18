@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Tests for `tf.data.experimental.unbatch()`."""
+"""Benchmarks for `tf.data.experimental.unbatch()`."""
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -33,7 +33,7 @@ from tensorflow.python.platform import test
 class UnbatchBenchmark(test.Benchmark):
   """Benchmarks for `tf.data.experimental.unbatch()`."""
 
-  def benchmarkNativeUnbatch(self):
+  def benchmark_native_unbatch(self):
     batch_sizes = [1, 2, 5, 10, 20, 50]
     elems_per_trial = 10000
     with ops.Graph().as_default():
@@ -42,7 +42,10 @@ class UnbatchBenchmark(test.Benchmark):
       dataset = dataset.batch(batch_size_placeholder)
       dataset = dataset.apply(batching.unbatch())
       dataset = dataset.skip(elems_per_trial)
-      iterator = dataset.make_initializable_iterator()
+      options = dataset_ops.Options()
+      options.experimental_optimization.apply_default_optimizations = False
+      dataset = dataset.with_options(options)
+      iterator = dataset_ops.make_initializable_iterator(dataset)
       next_element = iterator.get_next()
 
       with session.Session() as sess:
@@ -58,8 +61,6 @@ class UnbatchBenchmark(test.Benchmark):
             deltas.append((end - start) / elems_per_trial)
 
           median_wall_time = np.median(deltas)
-          print("Unbatch (native) batch size: %d Median wall time per element:"
-                " %f microseconds" % (batch_size, median_wall_time * 1e6))
           self.report_benchmark(
               iters=10000,
               wall_time=median_wall_time,
@@ -69,7 +70,7 @@ class UnbatchBenchmark(test.Benchmark):
   # Include a benchmark of the previous `unbatch()` implementation that uses
   # a composition of more primitive ops. Eventually we'd hope to generate code
   # that is as good in both cases.
-  def benchmarkOldUnbatchImplementation(self):
+  def benchmark_old_unbatch_implementation(self):
     batch_sizes = [1, 2, 5, 10, 20, 50]
     elems_per_trial = 10000
     with ops.Graph().as_default():
@@ -78,7 +79,10 @@ class UnbatchBenchmark(test.Benchmark):
       dataset = dataset.batch(batch_size_placeholder)
       dataset = dataset.flat_map(dataset_ops.Dataset.from_tensor_slices)
       dataset = dataset.skip(elems_per_trial)
-      iterator = dataset.make_initializable_iterator()
+      options = dataset_ops.Options()
+      options.experimental_optimization.apply_default_optimizations = False
+      dataset = dataset.with_options(options)
+      iterator = dataset_ops.make_initializable_iterator(dataset)
       next_element = iterator.get_next()
 
       with session.Session() as sess:
@@ -94,8 +98,6 @@ class UnbatchBenchmark(test.Benchmark):
             deltas.append((end - start) / elems_per_trial)
 
           median_wall_time = np.median(deltas)
-          print("Unbatch (unfused) batch size: %d Median wall time per element:"
-                " %f microseconds" % (batch_size, median_wall_time * 1e6))
           self.report_benchmark(
               iters=10000,
               wall_time=median_wall_time,

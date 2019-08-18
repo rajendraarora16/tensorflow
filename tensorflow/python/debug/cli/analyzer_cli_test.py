@@ -47,6 +47,13 @@ from tensorflow.python.platform import test
 from tensorflow.python.util import tf_inspect
 
 
+# Helper function to accommodate MKL-enabled TensorFlow:
+# MatMul op is supported by MKL and its name is prefixed with "_Mkl" during the
+# MKL graph rewrite pass.
+def _matmul_op_name():
+  return "_MklMatMul" if test_util.IsMklEnabled() else "MatMul"
+
+
 def _cli_config_from_temp_file():
   return cli_config.CLIConfig(
       config_file_path=os.path.join(tempfile.mkdtemp(), ".tfdbg_config"))
@@ -135,14 +142,9 @@ def assert_listed_tensors(tst,
   attr_segs = out.font_attr_segs
   line_counter = 0
 
-  num_tensors = len(expected_tensor_names)
-
-  if tensor_filter_name is None:
-    tst.assertEqual("%d dumped tensor(s):" % num_tensors, next(line_iter))
-  else:
-    tst.assertEqual("%d dumped tensor(s) passing filter \"%s\":" %
-                    (num_tensors, tensor_filter_name), next(line_iter))
+  num_dumped_tensors = int(next(line_iter).split(" ")[0])
   line_counter += 1
+  tst.assertGreaterEqual(num_dumped_tensors, len(expected_tensor_names))
 
   if op_type_regex is not None:
     tst.assertEqual("Op type regex filter: \"%s\"" % op_type_regex,
@@ -573,6 +575,7 @@ def create_analyzer_cli(dump):
   return analyzer, registry
 
 
+@test_util.run_v1_only("b/120545219")
 class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
 
   @classmethod
@@ -645,7 +648,6 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
     self.assertEqual(len("Size (B)") + 1, dump_size_col_width)
     self.assertEqual(len("Op type") + 1, op_type_col_width)
 
-  @test_util.run_deprecated_v1
   def testMeasureTensorListColumnWidthsGivesRightAnswerForData(self):
     dump = self._debug_dump.dumped_tensor_data[0]
     self.assertLess(dump.dump_size_bytes, 1000)
@@ -661,7 +663,6 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
     # column should be determined by the length of "VariableV2".
     self.assertEqual(len("VariableV2") + 1, op_type_col_width)
 
-  @test_util.run_deprecated_v1
   def testListTensors(self):
     # Use shorthand alias for the command prefix.
     out = self._registry.dispatch_command("lt", [])
@@ -670,12 +671,14 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
         "simple_mul_add/u:0", "simple_mul_add/v:0", "simple_mul_add/u/read:0",
         "simple_mul_add/v/read:0", "simple_mul_add/matmul:0",
         "simple_mul_add/add:0"
-    ], ["VariableV2", "VariableV2", "Identity", "Identity", "MatMul", "Add"])
+    ], [
+        "VariableV2", "VariableV2", "Identity", "Identity",
+        _matmul_op_name(), "Add"
+    ])
 
     # Check the main menu.
     check_main_menu(self, out, list_tensors_enabled=False)
 
-  @test_util.run_deprecated_v1
   def testListTensorsInReverseTimeOrderWorks(self):
     # Use shorthand alias for the command prefix.
     out = self._registry.dispatch_command("lt", ["-s", "timestamp", "-r"])
@@ -685,13 +688,14 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
             "simple_mul_add/u:0", "simple_mul_add/v:0",
             "simple_mul_add/u/read:0", "simple_mul_add/v/read:0",
             "simple_mul_add/matmul:0", "simple_mul_add/add:0"
+        ], [
+            "VariableV2", "VariableV2", "Identity", "Identity",
+            _matmul_op_name(), "Add"
         ],
-        ["VariableV2", "VariableV2", "Identity", "Identity", "MatMul", "Add"],
         sort_by="timestamp",
         reverse=True)
     check_main_menu(self, out, list_tensors_enabled=False)
 
-  @test_util.run_deprecated_v1
   def testListTensorsInDumpSizeOrderWorks(self):
     out = self._registry.dispatch_command("lt", ["-s", "dump_size"])
     assert_listed_tensors(
@@ -700,12 +704,13 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
             "simple_mul_add/u:0", "simple_mul_add/v:0",
             "simple_mul_add/u/read:0", "simple_mul_add/v/read:0",
             "simple_mul_add/matmul:0", "simple_mul_add/add:0"
+        ], [
+            "VariableV2", "VariableV2", "Identity", "Identity",
+            _matmul_op_name(), "Add"
         ],
-        ["VariableV2", "VariableV2", "Identity", "Identity", "MatMul", "Add"],
         sort_by="dump_size")
     check_main_menu(self, out, list_tensors_enabled=False)
 
-  @test_util.run_deprecated_v1
   def testListTensorsInReverseDumpSizeOrderWorks(self):
     out = self._registry.dispatch_command("lt", ["-s", "dump_size", "-r"])
     assert_listed_tensors(
@@ -714,8 +719,10 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
             "simple_mul_add/u:0", "simple_mul_add/v:0",
             "simple_mul_add/u/read:0", "simple_mul_add/v/read:0",
             "simple_mul_add/matmul:0", "simple_mul_add/add:0"
+        ], [
+            "VariableV2", "VariableV2", "Identity", "Identity",
+            _matmul_op_name(), "Add"
         ],
-        ["VariableV2", "VariableV2", "Identity", "Identity", "MatMul", "Add"],
         sort_by="dump_size",
         reverse=True)
     check_main_menu(self, out, list_tensors_enabled=False)
@@ -725,7 +732,6 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
     self.assertIn("ValueError: Unsupported key to sort tensors by: foobar",
                   out.lines)
 
-  @test_util.run_deprecated_v1
   def testListTensorsInOpTypeOrderWorks(self):
     # Use shorthand alias for the command prefix.
     out = self._registry.dispatch_command("lt", ["-s", "op_type"])
@@ -735,13 +741,14 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
             "simple_mul_add/u:0", "simple_mul_add/v:0",
             "simple_mul_add/u/read:0", "simple_mul_add/v/read:0",
             "simple_mul_add/matmul:0", "simple_mul_add/add:0"
+        ], [
+            "VariableV2", "VariableV2", "Identity", "Identity",
+            _matmul_op_name(), "Add"
         ],
-        ["VariableV2", "VariableV2", "Identity", "Identity", "MatMul", "Add"],
         sort_by="op_type",
         reverse=False)
     check_main_menu(self, out, list_tensors_enabled=False)
 
-  @test_util.run_deprecated_v1
   def testListTensorsInReverseOpTypeOrderWorks(self):
     # Use shorthand alias for the command prefix.
     out = self._registry.dispatch_command("lt", ["-s", "op_type", "-r"])
@@ -751,13 +758,14 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
             "simple_mul_add/u:0", "simple_mul_add/v:0",
             "simple_mul_add/u/read:0", "simple_mul_add/v/read:0",
             "simple_mul_add/matmul:0", "simple_mul_add/add:0"
+        ], [
+            "VariableV2", "VariableV2", "Identity", "Identity",
+            _matmul_op_name(), "Add"
         ],
-        ["VariableV2", "VariableV2", "Identity", "Identity", "MatMul", "Add"],
         sort_by="op_type",
         reverse=True)
     check_main_menu(self, out, list_tensors_enabled=False)
 
-  @test_util.run_deprecated_v1
   def testListTensorsInTensorNameOrderWorks(self):
     # Use shorthand alias for the command prefix.
     out = self._registry.dispatch_command("lt", ["-s", "tensor_name"])
@@ -767,13 +775,14 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
             "simple_mul_add/u:0", "simple_mul_add/v:0",
             "simple_mul_add/u/read:0", "simple_mul_add/v/read:0",
             "simple_mul_add/matmul:0", "simple_mul_add/add:0"
+        ], [
+            "VariableV2", "VariableV2", "Identity", "Identity",
+            _matmul_op_name(), "Add"
         ],
-        ["VariableV2", "VariableV2", "Identity", "Identity", "MatMul", "Add"],
         sort_by="tensor_name",
         reverse=False)
     check_main_menu(self, out, list_tensors_enabled=False)
 
-  @test_util.run_deprecated_v1
   def testListTensorsInReverseTensorNameOrderWorks(self):
     # Use shorthand alias for the command prefix.
     out = self._registry.dispatch_command("lt", ["-s", "tensor_name", "-r"])
@@ -783,13 +792,14 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
             "simple_mul_add/u:0", "simple_mul_add/v:0",
             "simple_mul_add/u/read:0", "simple_mul_add/v/read:0",
             "simple_mul_add/matmul:0", "simple_mul_add/add:0"
+        ], [
+            "VariableV2", "VariableV2", "Identity", "Identity",
+            _matmul_op_name(), "Add"
         ],
-        ["VariableV2", "VariableV2", "Identity", "Identity", "MatMul", "Add"],
         sort_by="tensor_name",
         reverse=True)
     check_main_menu(self, out, list_tensors_enabled=False)
 
-  @test_util.run_deprecated_v1
   def testListTensorsFilterByNodeNameRegex(self):
     out = self._registry.dispatch_command("list_tensors",
                                           ["--node_name_filter", ".*read.*"])
@@ -803,7 +813,6 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
     assert_listed_tensors(self, out, [], [], node_name_regex="^read")
     check_main_menu(self, out, list_tensors_enabled=False)
 
-  @test_util.run_deprecated_v1
   def testListTensorFilterByOpTypeRegex(self):
     out = self._registry.dispatch_command("list_tensors",
                                           ["--op_type_filter", "Identity"])
@@ -813,13 +822,13 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
         ["Identity", "Identity"],
         op_type_regex="Identity")
 
-    out = self._registry.dispatch_command("list_tensors",
-                                          ["-t", "(Add|MatMul)"])
+    out = self._registry.dispatch_command(
+        "list_tensors", ["-t", "(Add|" + _matmul_op_name() + ")"])
     assert_listed_tensors(
         self,
         out, ["simple_mul_add/add:0", "simple_mul_add/matmul:0"],
-        ["Add", "MatMul"],
-        op_type_regex="(Add|MatMul)")
+        ["Add", _matmul_op_name()],
+        op_type_regex=("(Add|" + _matmul_op_name() + ")"))
     check_main_menu(self, out, list_tensors_enabled=False)
 
   def testListTensorFilterByNodeNameRegexAndOpTypeRegex(self):
@@ -832,7 +841,6 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
         op_type_regex="(Add|MatMul)")
     check_main_menu(self, out, list_tensors_enabled=False)
 
-  @test_util.run_deprecated_v1
   def testListTensorWithFilterAndNodeNameExclusionWorks(self):
     # First, create and register the filter.
     def is_2x1_vector(datum, tensor):
@@ -856,7 +864,9 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
     assert_listed_tensors(
         self,
         out, ["simple_mul_add/matmul:0", "simple_mul_add/add:0"],
-        ["MatMul", "Add"], tensor_filter_name="is_2x1_vector")
+        [_matmul_op_name(), "Add"],
+        tensor_filter_name="is_2x1_vector")
+
     check_main_menu(self, out, list_tensors_enabled=False)
 
   def testListTensorsFilterNanOrInf(self):
@@ -889,14 +899,13 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
     out = self._registry.dispatch_command("list_tensors", ["--bar"])
     check_syntax_error_output(self, out, "list_tensors")
 
-  @test_util.run_deprecated_v1
   def testNodeInfoByNodeName(self):
     node_name = "simple_mul_add/matmul"
     out = self._registry.dispatch_command("node_info", [node_name])
 
     recipients = [("Add", "simple_mul_add/add"), ("Add", "simple_mul_add/add")]
 
-    assert_node_attribute_lines(self, out, node_name, "MatMul",
+    assert_node_attribute_lines(self, out, node_name, _matmul_op_name(),
                                 self._main_device,
                                 [("Identity", "simple_mul_add/u/read"),
                                  ("Identity", "simple_mul_add/v/read")], [],
@@ -914,22 +923,25 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
         [(len(out.lines[0]) - len(node_name), len(out.lines[0]), "bold")],
         out.font_attr_segs[0])
 
-  @test_util.run_deprecated_v1
   def testNodeInfoShowAttributes(self):
     node_name = "simple_mul_add/matmul"
     out = self._registry.dispatch_command("node_info", ["-a", node_name])
+
+    test_attr_key_val_pairs = [("transpose_a", "b: false"),
+                               ("transpose_b", "b: false"),
+                               ("T", "type: DT_DOUBLE")]
+    if test_util.IsMklEnabled():
+      test_attr_key_val_pairs.append(("_kernel", 's: "MklNameChangeOp"'))
 
     assert_node_attribute_lines(
         self,
         out,
         node_name,
-        "MatMul",
+        _matmul_op_name(),
         self._main_device, [("Identity", "simple_mul_add/u/read"),
                             ("Identity", "simple_mul_add/v/read")], [],
         [("Add", "simple_mul_add/add"), ("Add", "simple_mul_add/add")], [],
-        attr_key_val_pairs=[("transpose_a", "b: false"),
-                            ("transpose_b", "b: false"),
-                            ("T", "type: DT_DOUBLE")])
+        attr_key_val_pairs=test_attr_key_val_pairs)
     check_main_menu(
         self,
         out,
@@ -938,7 +950,6 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
         print_tensor_node_name=node_name,
         list_outputs_node_name=node_name)
 
-  @test_util.run_deprecated_v1
   def testNodeInfoShowDumps(self):
     node_name = "simple_mul_add/matmul"
     out = self._registry.dispatch_command("node_info", ["-d", node_name])
@@ -947,7 +958,7 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
         self,
         out,
         node_name,
-        "MatMul",
+        _matmul_op_name(),
         self._main_device, [("Identity", "simple_mul_add/u/read"),
                             ("Identity", "simple_mul_add/v/read")], [],
         [("Add", "simple_mul_add/add"), ("Add", "simple_mul_add/add")], [],
@@ -963,7 +974,6 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
                     len(out.lines[16]) - len(out.lines[16].strip()),
                     len(out.lines[16]), "pt %s:0 -n 0" % node_name)
 
-  @test_util.run_deprecated_v1
   def testNodeInfoShowStackTraceUnavailableIsIndicated(self):
     self._debug_dump.set_python_graph(None)
 
@@ -974,11 +984,12 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
         self,
         out,
         node_name,
-        "MatMul",
+        _matmul_op_name(),
         self._main_device, [("Identity", "simple_mul_add/u/read"),
                             ("Identity", "simple_mul_add/v/read")], [],
         [("Add", "simple_mul_add/add"), ("Add", "simple_mul_add/add")], [],
-        show_stack_trace=True, stack_trace_available=False)
+        show_stack_trace=True,
+        stack_trace_available=False)
     check_main_menu(
         self,
         out,
@@ -987,7 +998,6 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
         print_tensor_node_name=node_name,
         list_outputs_node_name=node_name)
 
-  @test_util.run_deprecated_v1
   def testNodeInfoShowStackTraceAvailableWorks(self):
     self._debug_dump.set_python_graph(self._sess.graph)
 
@@ -998,11 +1008,12 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
         self,
         out,
         node_name,
-        "MatMul",
+        _matmul_op_name(),
         self._main_device, [("Identity", "simple_mul_add/u/read"),
                             ("Identity", "simple_mul_add/v/read")], [],
         [("Add", "simple_mul_add/add"), ("Add", "simple_mul_add/add")], [],
-        show_stack_trace=True, stack_trace_available=True)
+        show_stack_trace=True,
+        stack_trace_available=True)
     check_main_menu(
         self,
         out,
@@ -1011,7 +1022,6 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
         print_tensor_node_name=node_name,
         list_outputs_node_name=node_name)
 
-  @test_util.run_deprecated_v1
   def testNodeInfoByTensorName(self):
     node_name = "simple_mul_add/u/read"
     tensor_name = node_name + ":0"
@@ -1020,7 +1030,8 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
     assert_node_attribute_lines(self, out, node_name, "Identity",
                                 self._main_device,
                                 [("VariableV2", "simple_mul_add/u")], [],
-                                [("MatMul", "simple_mul_add/matmul")], [])
+                                [(_matmul_op_name(), "simple_mul_add/matmul")],
+                                [])
     check_main_menu(
         self,
         out,
@@ -1381,7 +1392,6 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
         break
     return index
 
-  @test_util.run_deprecated_v1
   def testPrintSourceForOpNamesWholeFileWorks(self):
     self._debug_dump.set_python_graph(self._sess.graph)
     out = self._registry.dispatch_command(
@@ -1434,7 +1444,6 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
     self.assertEqual("pt simple_mul_add/add",
                      out.font_attr_segs[index + 1][0][2].content)
 
-  @test_util.run_deprecated_v1
   def testPrintSourceForTensorNamesWholeFileWorks(self):
     self._debug_dump.set_python_graph(self._sess.graph)
     out = self._registry.dispatch_command(
@@ -1455,7 +1464,6 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
     self.assertEqual("pt simple_mul_add/u:0",
                      out.font_attr_segs[index + 2][0][2].content)
 
-  @test_util.run_deprecated_v1
   def testPrintSourceForOpNamesStartingAtSpecifiedLineWorks(self):
     self._debug_dump.set_python_graph(self._sess.graph)
     out = self._registry.dispatch_command(
@@ -1482,7 +1490,6 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
     self.assertEqual("pt simple_mul_add/u/read",
                      out.font_attr_segs[index + 3][0][2].content)
 
-  @test_util.run_deprecated_v1
   def testPrintSourceForOpNameSettingMaximumElementCountWorks(self):
     self._debug_dump.set_python_graph(self._sess.graph)
     out = self._registry.dispatch_command(
@@ -1527,7 +1534,6 @@ class AnalyzerCLISimpleMulAddTest(test_util.TensorFlowTestCase):
         self.assertTrue(cli_shared.COLOR_GRAY in attr_seg[2] or
                         attr_seg[2] == cli_shared.COLOR_GRAY)
 
-  @test_util.run_deprecated_v1
   def testListSourceWithNodeNameFilterWithMatchesWorks(self):
     self._debug_dump.set_python_graph(self._sess.graph)
     out = self._registry.dispatch_command("list_source", ["-n", ".*/read"])
@@ -1691,6 +1697,7 @@ class AnalyzerCLIPrintLargeTensorTest(test_util.TensorFlowTestCase):
     self.assertNotIn("...,", out.lines[4])
 
 
+@test_util.run_v1_only("b/120545219")
 class AnalyzerCLIControlDepTest(test_util.TensorFlowTestCase):
 
   @classmethod
@@ -1742,7 +1749,6 @@ class AnalyzerCLIControlDepTest(test_util.TensorFlowTestCase):
     # Tear down temporary dump directory.
     shutil.rmtree(cls._dump_root)
 
-  @test_util.run_deprecated_v1
   def testNodeInfoWithControlDependencies(self):
     # Call node_info on a node with control inputs.
     out = self._registry.dispatch_command("node_info",
@@ -1783,7 +1789,6 @@ class AnalyzerCLIControlDepTest(test_util.TensorFlowTestCase):
                     len(out.lines[z_line]),
                     "ni -a -d -t control_deps/ctrl_dep_z")
 
-  @test_util.run_deprecated_v1
   def testListInputsNonRecursiveNoControl(self):
     """List inputs non-recursively, without any control inputs."""
 
@@ -1826,7 +1831,6 @@ class AnalyzerCLIControlDepTest(test_util.TensorFlowTestCase):
                     len(out.lines[3]) - len("control_deps/ctrl_dep_y"),
                     len(out.lines[3]), "li -c -r control_deps/ctrl_dep_y")
 
-  @test_util.run_deprecated_v1
   def testListInputsNonRecursiveNoControlUsingTensorName(self):
     """List inputs using the name of an output tensor of the node."""
 
@@ -1855,7 +1859,6 @@ class AnalyzerCLIControlDepTest(test_util.TensorFlowTestCase):
                     len(out.lines[3]) - len("control_deps/ctrl_dep_y"),
                     len(out.lines[3]), "li -c -r control_deps/ctrl_dep_y")
 
-  @test_util.run_deprecated_v1
   def testListInputsNonRecursiveWithControls(self):
     """List inputs non-recursively, with control inputs."""
     node_name = "control_deps/ctrl_dep_z"
@@ -1886,7 +1889,6 @@ class AnalyzerCLIControlDepTest(test_util.TensorFlowTestCase):
                     len(out.lines[5]) - len("control_deps/x"),
                     len(out.lines[5]), "li -c -r control_deps/x")
 
-  @test_util.run_deprecated_v1
   def testListInputsRecursiveWithControls(self):
     """List inputs recursively, with control inputs."""
     node_name = "control_deps/ctrl_dep_z"
@@ -1932,7 +1934,6 @@ class AnalyzerCLIControlDepTest(test_util.TensorFlowTestCase):
                     len(out.lines[18]) - len("control_deps/x"),
                     len(out.lines[18]), "li -c -r control_deps/x")
 
-  @test_util.run_deprecated_v1
   def testListInputsRecursiveWithControlsWithDepthLimit(self):
     """List inputs recursively, with control inputs and a depth limit."""
     node_name = "control_deps/ctrl_dep_z"
@@ -1992,7 +1993,6 @@ class AnalyzerCLIControlDepTest(test_util.TensorFlowTestCase):
         "ERROR: There is no node named \"control_deps/z/foo\" in the "
         "partition graphs"], out.lines)
 
-  @test_util.run_deprecated_v1
   def testListRecipientsRecursiveWithControlsWithDepthLimit(self):
     """List recipients recursively, with control inputs and a depth limit."""
 
@@ -2025,6 +2025,7 @@ class AnalyzerCLIControlDepTest(test_util.TensorFlowTestCase):
                      out.font_attr_segs[0])
 
 
+@test_util.run_v1_only("b/120545219")
 class AnalyzerCLIWhileLoopTest(test_util.TensorFlowTestCase):
 
   @classmethod
@@ -2064,7 +2065,6 @@ class AnalyzerCLIWhileLoopTest(test_util.TensorFlowTestCase):
     # Tear down temporary dump directory.
     shutil.rmtree(cls._dump_root)
 
-  @test_util.run_deprecated_v1
   def testMultipleDumpsPrintTensorNoNumber(self):
     output = self._registry.dispatch_command("pt", ["while/Identity:0"])
 
@@ -2082,7 +2082,6 @@ class AnalyzerCLIWhileLoopTest(test_util.TensorFlowTestCase):
     self.assertEqual("For example:", output.lines[-2])
     self.assertEqual("  print_tensor while/Identity:0 -n 0", output.lines[-1])
 
-  @test_util.run_deprecated_v1
   def testMultipleDumpsPrintTensorWithNumber(self):
     for i in xrange(5):
       output = self._registry.dispatch_command(
@@ -2096,7 +2095,6 @@ class AnalyzerCLIWhileLoopTest(test_util.TensorFlowTestCase):
       self.assertTrue(output.lines[4].startswith("array(%d" % i))
       self.assertTrue(output.lines[4].endswith(")"))
 
-  @test_util.run_deprecated_v1
   def testMultipleDumpsPrintTensorInvalidNumber(self):
     output = self._registry.dispatch_command("pt",
                                              ["while/Identity:0", "-n", "10"])

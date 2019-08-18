@@ -24,7 +24,6 @@ limitations under the License.
 #include "absl/memory/memory.h"
 #include "absl/types/optional.h"
 #include "tensorflow/compiler/jit/union_find.h"
-#include "tensorflow/compiler/tf2xla/dump_graph.h"
 #include "tensorflow/compiler/tf2xla/functionalize_cond.h"
 #include "tensorflow/compiler/tf2xla/functionalize_control_flow_util.h"
 #include "tensorflow/compiler/tf2xla/tf2xla_util.h"
@@ -36,47 +35,12 @@ limitations under the License.
 #include "tensorflow/core/graph/control_flow.h"
 #include "tensorflow/core/graph/node_builder.h"
 #include "tensorflow/core/lib/strings/strcat.h"
+#include "tensorflow/core/util/dump_graph.h"
 
 namespace tensorflow {
 namespace {
 
 using xla::StatusOr;
-
-// Information about a loop argument.
-struct Arg {
-  // Every loop argument has an Enter node.
-  Node* enter;
-
-  // Is the loop argument a loop-invariant value? Taken from the `is_constant`
-  // attribute on the Enter node.
-  bool is_loop_invariant;
-
-  // If 'is_loop_invariant' is true, the following are all nullptr. Non-constant
-  // arguments must have all of the following nodes:
-  Node* merge = nullptr;
-  Node* switch_node = nullptr;
-  Node* next_iteration = nullptr;
-  Node* exit = nullptr;
-};
-
-// Information about a loop frame.
-struct Frame {
-  string name;
-
-  // Pointer to the parent frame. The root frame has a pointer to itself.
-  Frame* parent = nullptr;
-  int num_children = 0;
-
-  // Arguments to this loop.
-  std::vector<Arg> args;
-
-  // The loop condition of the loop. There should be exactly one loop condition
-  // in every loop.
-  Node* loop_cond = nullptr;
-
-  // Set of nodes that belong to the loop frame.
-  std::unordered_set<Node*> nodes;
-};
 
 // Copies a subgraph from `graph` to `output` by performing a reverse DFS
 // starting at nodes in vector `stack`.
@@ -93,7 +57,7 @@ struct Frame {
 // taking from the Switch node was not necessarily the first output, but _Arg
 // nodes only have one output. By adding the Switch node to `squash_src_outputs`
 // we rewrite the src_output of the corresponding edge to be 0.
-Status CopySubgraph(const Graph& graph, const Frame* frame,
+Status CopySubgraph(const Graph& graph, const WhileLoopFrame* frame,
                     std::vector<Node*> stack,
                     const std::vector<bool>& squash_src_outputs,
                     std::vector<Node*>* node_map, Graph* output) {
@@ -108,7 +72,19 @@ Status CopySubgraph(const Graph& graph, const Frame* frame,
     if (visited[n->id()]) continue;
     visited[n->id()] = true;
 
-    for (const Edge* e : n->in_edges()) {
+    // Sort "n->in_edges()" to make sure nodes are copied in a deterministic
+    // order.
+    std::vector<const Edge*> sorted_edges(n->in_edges().begin(),
+                                          n->in_edges().end());
+    std::sort(sorted_edges.begin(), sorted_edges.end(),
+              [](const Edge* a, const Edge* b) {
+                int a_src_output = a->src_output(),
+                    b_src_output = b->src_output();
+                StringPiece a_name(a->src()->name()), b_name(b->src()->name());
+                return std::tie(a_src_output, a_name) <
+                       std::tie(b_src_output, b_name);
+              });
+    for (const Edge* e : sorted_edges) {
       Node* src = e->src();
       if (frame != nullptr && frame->nodes.find(src) == frame->nodes.end()) {
         // We traversed out of the loop frame, without encountering a cut node.
@@ -142,7 +118,7 @@ StatusOr<Node*> BuildArgNode(Graph* graph, DataType type, int index) {
 }
 
 // Builds a graph for the loop condition.
-Status BuildLoopCondition(const Graph& graph, Frame* frame,
+Status BuildLoopCondition(const Graph& graph, WhileLoopFrame* frame,
                           std::unique_ptr<Graph>* cond_output) {
   VLOG(2) << "Building loop condition for " << frame->name;
   *cond_output = absl::make_unique<Graph>(graph.op_registry());
@@ -154,7 +130,7 @@ Status BuildLoopCondition(const Graph& graph, Frame* frame,
 
   // Build one _Arg node for each Enter node.
   for (int i = 0; i < frame->args.size(); ++i) {
-    const Arg& arg = frame->args[i];
+    const WhileLoopArg& arg = frame->args[i];
 
     TF_ASSIGN_OR_RETURN(Node * arg_node,
                         BuildArgNode(output, arg.enter->input_type(0), i));
@@ -178,7 +154,7 @@ Status BuildLoopCondition(const Graph& graph, Frame* frame,
 }
 
 // Builds a graph for the loop body.
-Status BuildLoopBody(const Graph& graph, Frame* frame,
+Status BuildLoopBody(const Graph& graph, WhileLoopFrame* frame,
                      DataTypeVector* arg_types,
                      std::unique_ptr<Graph>* body_output) {
   VLOG(2) << "Building loop body for " << frame->name;
@@ -194,39 +170,34 @@ Status BuildLoopBody(const Graph& graph, Frame* frame,
   next_iterations.reserve(frame->args.size());
   arg_types->reserve(frame->args.size());
   for (int i = 0; i < frame->args.size(); ++i) {
-    const Arg& arg = frame->args[i];
+    const WhileLoopArg& arg = frame->args[i];
 
     DataType dtype = arg.enter->input_type(0);
     arg_types->push_back(dtype);
 
     TF_ASSIGN_OR_RETURN(Node * arg_node, BuildArgNode(output, dtype, i));
-
-    if (dtype == DT_RESOURCE) {
-      // The convention of the XLA bridge is that resource variable arguments
-      // are only inputs to the loop body and have no corresponding output.
-      // TODO(b/37741920): change the convention so that DT_RESOURCE variables
-      // are both inputs and outputs, and then remove this case.
-      TF_RET_CHECK(arg.is_loop_invariant);
+    TF_ASSIGN_OR_RETURN(Node * retval_node, BuildRetvalNode(output, dtype, i));
+    if (arg.is_loop_invariant) {
+      // Argument is loop-invariant. Forward it from the Arg to the Retval.
       node_map[arg.enter->id()] = arg_node;
+      output->AddEdge(arg_node, 0, retval_node, 0);
     } else {
-      TF_ASSIGN_OR_RETURN(Node * retval_node,
-                          BuildRetvalNode(output, dtype, i));
-
-      if (arg.is_loop_invariant) {
-        // Argument is loop-invariant. Forward it from the Arg to the Retval.
-        node_map[arg.enter->id()] = arg_node;
-        output->AddEdge(arg_node, 0, retval_node, 0);
-      } else {
-        // Argument is loop-varying.
-        node_map[arg.switch_node->id()] = arg_node;
-        // The Switch node has two outputs, but _Arg only has one. This tells
-        // the CopySubgraph function to rewrite the output number of edges from
-        // the _Arg node to be 0 rather than copying the output number from the
-        // Switch node.
-        squash_src_outputs[arg.switch_node->id()] = true;
-        node_map[arg.next_iteration->id()] = retval_node;
-        next_iterations.push_back(arg.next_iteration);
+      // Argument is loop-varying.
+      if (dtype == DT_RESOURCE) {
+        // DT_RESOURCE arguments should always be loop-invariant in the graphs
+        // generated from TF.
+        return errors::Unimplemented("Loop-varying DT_RESOURCE Enter node ",
+                                     arg.enter->name(), " is currently not",
+                                     " supported.");
       }
+      node_map[arg.switch_node->id()] = arg_node;
+      // The Switch node has two outputs, but _Arg only has one. This tells
+      // the CopySubgraph function to rewrite the output number of edges from
+      // the _Arg node to be 0 rather than copying the output number from the
+      // Switch node.
+      squash_src_outputs[arg.switch_node->id()] = true;
+      node_map[arg.next_iteration->id()] = retval_node;
+      next_iterations.push_back(arg.next_iteration);
     }
   }
 
@@ -290,19 +261,18 @@ Status AddMissingFunctionDef(const FunctionDef& fdef,
 }
 
 Status FunctionalizeLoop(const FunctionLibraryDefinition* lookup_library,
-                         Graph* graph, Frame* frame,
+                         Graph* graph, WhileLoopFrame* frame,
                          FunctionLibraryDefinition* library) {
   VLOG(2) << "Frame " << frame->name << " before: "
-          << dump_graph::DumpGraphToFile("functionalize_before", *graph,
-                                         library);
+          << DumpGraphToFile("functionalize_before", *graph, library);
 
   // Split loop-varying Enter nodes with multiple successors. If the same
   // Tensor is fed as input to multiple loop arguments, we may end up with a
   // shared Enter node. We clone Enter nodes with multiple successors to
   // maintain the invariant of a unique Enter node per argument of the final
   // loop.
-  std::vector<Arg> args;
-  for (const Arg& arg : frame->args) {
+  std::vector<WhileLoopArg> args;
+  for (const WhileLoopArg& arg : frame->args) {
     if (arg.is_loop_invariant) {
       args.push_back(arg);
     } else {
@@ -313,7 +283,7 @@ Status FunctionalizeLoop(const FunctionLibraryDefinition* lookup_library,
           continue;
         }
         TF_RET_CHECK(!edges[i]->IsControlEdge()) << edges[i]->src()->name();
-        Arg new_arg;
+        WhileLoopArg new_arg;
         new_arg.is_loop_invariant = false;
         if (i == 0) {
           new_arg.enter = arg.enter;
@@ -336,7 +306,7 @@ Status FunctionalizeLoop(const FunctionLibraryDefinition* lookup_library,
   frame->args = std::move(args);
 
   std::sort(frame->args.begin(), frame->args.end(),
-            [](const Arg& a, const Arg& b) {
+            [](const WhileLoopArg& a, const WhileLoopArg& b) {
               return NodeCmpByNameResourcesLast()(a.enter, b.enter);
             });
 
@@ -362,7 +332,7 @@ Status FunctionalizeLoop(const FunctionLibraryDefinition* lookup_library,
   //               ^                  ^
   //               |                  |
   //              ...                ...
-  for (Arg& arg : frame->args) {
+  for (WhileLoopArg& arg : frame->args) {
     if (!arg.is_loop_invariant) {
       // Follow the edge from the Enter to Merge.
       const Edge* enter_merge = nullptr;
@@ -490,8 +460,8 @@ Status FunctionalizeLoop(const FunctionLibraryDefinition* lookup_library,
   TF_RETURN_IF_ERROR(FunctionalizeCond(body_graph.get(), library));
 
   VLOG(2) << "Frame " << frame->name << " condition: "
-          << dump_graph::DumpGraphToFile("loop_condition", *cond_graph, library)
-          << " body: " << dump_graph::DumpGraphToFile("loop_body", *body_graph);
+          << DumpGraphToFile("loop_condition", *cond_graph, library)
+          << " body: " << DumpGraphToFile("loop_body", *body_graph);
 
   static std::atomic<int64> sequence_num(0LL);
   int64 id = ++sequence_num;
@@ -531,7 +501,7 @@ Status FunctionalizeLoop(const FunctionLibraryDefinition* lookup_library,
   }
   std::vector<NodeDefBuilder::NodeOut> inputs;
   for (int i = 0; i < frame->args.size(); ++i) {
-    const Arg& arg = frame->args[i];
+    const WhileLoopArg& arg = frame->args[i];
     const Edge* in_edge;
     TF_RETURN_IF_ERROR(arg.enter->input_edge(0, &in_edge));
     if (in_edge->IsControlEdge()) {
@@ -547,7 +517,7 @@ Status FunctionalizeLoop(const FunctionLibraryDefinition* lookup_library,
 
   // Copies edges to the Enter nodes and from the Exit nodes onto the While.
   for (int i = 0; i < frame->args.size(); ++i) {
-    const Arg& arg = frame->args[i];
+    const WhileLoopArg& arg = frame->args[i];
     const Edge* in_edge;
     TF_RETURN_IF_ERROR(arg.enter->input_edge(0, &in_edge));
     if (in_edge->IsControlEdge()) {
@@ -585,8 +555,7 @@ Status FunctionalizeLoop(const FunctionLibraryDefinition* lookup_library,
   frame->parent->nodes.insert(while_node);
 
   VLOG(2) << "Frame " << frame->name << " after: "
-          << dump_graph::DumpGraphToFile("functionalize_after", *graph,
-                                         library);
+          << DumpGraphToFile("functionalize_after", *graph, library);
 
   return Status::OK();
 }
@@ -608,39 +577,11 @@ Status FunctionalizeWhileLoop(const FunctionLibraryDefinition* lookup_library,
   }
 
   // Builds Frames, indexed by name.
-  std::unordered_map<string, Frame> frames;
-  for (Node* node : graph->op_nodes()) {
-    const ControlFlowInfo& cf = cf_info[node->id()];
-
-    VLOG(2) << "node: " << node->name() << " (" << node->id()
-            << ") frame_name: " << cf.frame_name
-            << " frame: " << (cf.frame ? cf.frame->name() : "---")
-            << " parent_frame: "
-            << (cf.parent_frame ? cf.parent_frame->name() : "---");
-    TF_RET_CHECK(cf.frame != nullptr && cf.parent_frame != nullptr);
-
-    Frame& frame = frames[cf.frame_name];
-    Frame* parent = &frames[cf_info[cf.parent_frame->id()].frame_name];
-    if (frame.parent == nullptr) {
-      frame.parent = parent;
-      frame.name = cf.frame_name;
-      ++parent->num_children;
-    }
-
-    if (IsEnter(node)) {
-      Arg arg;
-      arg.enter = node;
-      TF_RETURN_IF_ERROR(GetNodeAttr(arg.enter->attrs(), "is_constant",
-                                     &arg.is_loop_invariant));
-      frame.args.push_back(arg);
-    } else if (IsLoopCond(node)) {
-      frame.loop_cond = node;
-    }
-    frame.nodes.insert(node);
-  }
+  std::unordered_map<string, WhileLoopFrame> frames;
+  TF_RETURN_IF_ERROR(ExtractWhileLoopFrames(cf_info, graph, &frames));
 
   // Adds frames with no children (i.e., the innermost frames) to a worklist.
-  std::deque<Frame*> worklist;
+  std::deque<WhileLoopFrame*> worklist;
   for (auto& frame : frames) {
     if (frame.second.num_children == 0) {
       worklist.push_back(&frame.second);
@@ -649,7 +590,7 @@ Status FunctionalizeWhileLoop(const FunctionLibraryDefinition* lookup_library,
 
   // Eliminate loops from innermost to outermost.
   while (!worklist.empty()) {
-    Frame* frame = worklist.front();
+    WhileLoopFrame* frame = worklist.front();
     worklist.pop_front();
     if (frame->parent == frame) {
       // Skip the root frame.

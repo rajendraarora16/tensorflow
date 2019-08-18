@@ -19,6 +19,7 @@ limitations under the License.
 #include "tensorflow/lite/c/c_api_internal.h"
 #include "tensorflow/lite/kernels/activation_functor.h"
 #include "tensorflow/lite/kernels/internal/kernel_utils.h"
+#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 #include "tensorflow/lite/kernels/op_macros.h"
 
@@ -85,15 +86,17 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_OK(context,
                     context->ResizeTensor(context, output, output_size_array));
 
+  const bool is_hybrid = IsHybridOp(input, input_weights);
+
   // Allocate temporary tensors to store quantized values of input and
   // hidden_state tensors.
-  if (input->type == kTfLiteFloat32 && input_weights->type == kTfLiteUInt8) {
+  if (is_hybrid) {
     int* scratch_tensor_index = reinterpret_cast<int*>(node->user_data);
     TfLiteIntArrayFree(node->temporaries);
     node->temporaries = TfLiteIntArrayCreate(3);
     node->temporaries->data[0] = *scratch_tensor_index;
     TfLiteTensor* input_quantized = GetTemporary(context, node, /*index=*/0);
-    input_quantized->type = kTfLiteUInt8;
+    input_quantized->type = input_weights->type;
     input_quantized->allocation_type = kTfLiteArenaRw;
     if (!TfLiteIntArrayEqual(input_quantized->dims, input->dims)) {
       TfLiteIntArray* input_quantized_size = TfLiteIntArrayCopy(input->dims);
@@ -103,7 +106,7 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
     node->temporaries->data[1] = *scratch_tensor_index + 1;
     TfLiteTensor* hidden_state_quantized =
         GetTemporary(context, node, /*index=*/1);
-    hidden_state_quantized->type = kTfLiteUInt8;
+    hidden_state_quantized->type = input_weights->type;
     hidden_state_quantized->allocation_type = kTfLiteArenaRw;
     if (!TfLiteIntArrayEqual(hidden_state_quantized->dims,
                              hidden_state->dims)) {
@@ -177,19 +180,17 @@ TfLiteStatus EvalHybrid(const TfLiteTensor* input,
   const float* input_ptr_batch = input->data.f;
   float* output_ptr_batch = output->data.f;
   // Initialize input_weights, recurrent_weights and bias.
-  const int8_t* input_weights_ptr =
-      reinterpret_cast<const int8_t*>(input_weights->data.uint8);
+  const int8_t* input_weights_ptr = GetTensorData<int8_t>(input_weights);
   const int8_t* recurrent_weights_ptr =
-      reinterpret_cast<const int8_t*>(recurrent_weights->data.uint8);
+      GetTensorData<int8_t>(recurrent_weights);
   const float* bias_ptr = bias->data.f;
   // Get the scale of the quantized weights.
   float input_weights_scale = input_weights->params.scale;
   float recurrent_weights_scale = recurrent_weights->params.scale;
   // Initialize temporary storage for quantized values.
-  int8_t* quantized_input_ptr =
-      reinterpret_cast<int8_t*>(input_scratch->data.uint8);
+  int8_t* quantized_input_ptr = GetTensorData<int8_t>(input_scratch);
   int8_t* quantized_hidden_state_ptr =
-      reinterpret_cast<int8_t*>(hidden_state_scratch->data.uint8);
+      GetTensorData<int8_t>(hidden_state_scratch);
   float* scaling_factors_ptr = scaling_factors->data.f;
 
   kernel_utils::RnnBatchStep(
@@ -218,7 +219,8 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
     case kTfLiteFloat32:
       return EvalFloat(input, input_weights, recurrent_weights, bias, params,
                        hidden_state, output);
-    case kTfLiteUInt8: {
+    case kTfLiteUInt8:
+    case kTfLiteInt8: {
       // TODO(mirkov): implement eval with quantized inputs as well.
       TfLiteTensor* input_quantized = GetTemporary(context, node, 0);
       TfLiteTensor* hidden_state_quantized = GetTemporary(context, node, 1);

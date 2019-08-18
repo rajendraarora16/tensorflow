@@ -17,14 +17,13 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from tensorflow.python.data.experimental.ops import optimization
+from tensorflow.python.compat import compat
 from tensorflow.python.data.experimental.ops import readers
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.data.ops import readers as core_readers
-from tensorflow.python.data.util import nest
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
-from tensorflow.python.framework import tensor_shape
+from tensorflow.python.framework import tensor_spec
 from tensorflow.python.ops import gen_experimental_dataset_ops
 from tensorflow.python.util import deprecation
 
@@ -46,8 +45,8 @@ def make_csv_dataset(
     shuffle=True,
     shuffle_buffer_size=10000,
     shuffle_seed=None,
-    prefetch_buffer_size=optimization.AUTOTUNE,
-    num_parallel_reads=1,
+    prefetch_buffer_size=None,
+    num_parallel_reads=None,
     sloppy=False,
     num_rows_for_inference=100,
     compression_type=None,
@@ -61,7 +60,7 @@ def make_csv_dataset(
 
   Args:
     file_pattern: List of files or patterns of file paths containing CSV
-      records. See `tf.gfile.Glob` for pattern rules.
+      records. See `tf.io.gfile.glob` for pattern rules.
     batch_size: An int representing the number of records to combine
       in a single batch.
     column_names: An optional list of strings that corresponds to the CSV
@@ -113,7 +112,7 @@ def make_csv_dataset(
       batches to prefetch for performance improvement. Recommended value is the
       number of batches consumed per training step. Defaults to auto-tune.
     num_parallel_reads: Number of threads used to read CSV records from files.
-      If >1, the results will be interleaved.
+      If >1, the results will be interleaved. Defaults to `1`.
     sloppy: If `True`, reading performance will be improved at
       the cost of non-deterministic ordering. If `False`, the order of elements
       produced is deterministic prior to shuffling (elements are still
@@ -174,9 +173,9 @@ def make_batched_features_dataset(file_pattern,
                                   shuffle=True,
                                   shuffle_buffer_size=10000,
                                   shuffle_seed=None,
-                                  prefetch_buffer_size=optimization.AUTOTUNE,
-                                  reader_num_threads=1,
-                                  parser_num_threads=2,
+                                  prefetch_buffer_size=None,
+                                  reader_num_threads=None,
+                                  parser_num_threads=None,
                                   sloppy_ordering=False,
                                   drop_final_batch=False):
   """Returns a `Dataset` of feature dictionaries from `Example` protos.
@@ -226,11 +225,11 @@ def make_batched_features_dataset(file_pattern,
 
   Args:
     file_pattern: List of files or patterns of file paths containing
-      `Example` records. See `tf.gfile.Glob` for pattern rules.
+      `Example` records. See `tf.io.gfile.glob` for pattern rules.
     batch_size: An int representing the number of records to combine
       in a single batch.
     features: A `dict` mapping feature keys to `FixedLenFeature` or
-      `VarLenFeature` values. See `tf.parse_example`.
+      `VarLenFeature` values. See `tf.io.parse_example`.
     reader: A function or class that can be
       called with a `filenames` tensor and (optional) `reader_args` and returns
       a `Dataset` of `Example` tensors. Defaults to `tf.data.TFRecordDataset`.
@@ -249,9 +248,9 @@ def make_batched_features_dataset(file_pattern,
       improve performance. Recommended value is the number of batches consumed
       per training step. Defaults to auto-tune.
     reader_num_threads: Number of threads used to read `Example` records. If >1,
-      the results will be interleaved.
+      the results will be interleaved. Defaults to `1`.
     parser_num_threads: Number of threads to use for parsing `Example` tensors
-      into a dictionary of `Feature` tensors.
+      into a dictionary of `Feature` tensors. Defaults to `2`.
     sloppy_ordering: If `True`, reading performance will be improved at
       the cost of non-deterministic ordering. If `False`, the order of elements
       produced is deterministic prior to shuffling (elements are still
@@ -329,11 +328,11 @@ def read_batch_features(file_pattern,
 
   Args:
     file_pattern: List of files or patterns of file paths containing
-      `Example` records. See `tf.gfile.Glob` for pattern rules.
+      `Example` records. See `tf.io.gfile.glob` for pattern rules.
     batch_size: An int representing the number of records to combine
       in a single batch.
     features: A `dict` mapping feature keys to `FixedLenFeature` or
-      `VarLenFeature` values. See `tf.parse_example`.
+      `VarLenFeature` values. See `tf.io.parse_example`.
     reader: A function or class that can be
       called with a `filenames` tensor and (optional) `reader_args` and returns
       a `Dataset` of `Example` tensors. Defaults to `tf.data.TFRecordDataset`.
@@ -355,7 +354,7 @@ def read_batch_features(file_pattern,
       shuffle=randomize_input,
       num_epochs=num_epochs,
       shuffle_buffer_size=capacity)
-  iterator = dataset.make_one_shot_iterator()
+  iterator = dataset_ops.make_one_shot_iterator(dataset)
   outputs = iterator.get_next()
   return outputs
 
@@ -379,37 +378,28 @@ class LMDBDataset(dataset_ops.DatasetSource):
     (key value) pairs sequentially.
     For example:
     ```python
+    tf.compat.v1.enable_eager_execution()
+
     dataset = tf.contrib.lmdb.LMDBDataset("/foo/bar.mdb")
-    iterator = dataset.make_one_shot_iterator()
-    next_element = iterator.get_next()
+
     # Prints the (key, value) pairs inside a lmdb file.
-    while True:
-      try:
-        print(sess.run(next_element))
-      except tf.errors.OutOfRangeError:
-        break
+    for key, value in dataset:
+      print(key, value)
     ```
     Args:
       filenames: A `tf.string` tensor containing one or more filenames.
     """
-    super(LMDBDataset, self).__init__()
     self._filenames = ops.convert_to_tensor(
         filenames, dtype=dtypes.string, name="filenames")
-
-  def _as_variant_tensor(self):
-    return gen_experimental_dataset_ops.experimental_lmdb_dataset(
-        self._filenames,
-        output_types=nest.flatten(self.output_types),
-        output_shapes=nest.flatten(self.output_shapes))
-
-  @property
-  def output_classes(self):
-    return ops.Tensor, ops.Tensor
+    if compat.forward_compatible(2019, 8, 3):
+      variant_tensor = gen_experimental_dataset_ops.lmdb_dataset(
+          self._filenames, **self._flat_structure)
+    else:
+      variant_tensor = gen_experimental_dataset_ops.experimental_lmdb_dataset(
+          self._filenames, **self._flat_structure)
+    super(LMDBDataset, self).__init__(variant_tensor)
 
   @property
-  def output_shapes(self):
-    return (tensor_shape.TensorShape([]), tensor_shape.TensorShape([]))
-
-  @property
-  def output_types(self):
-    return dtypes.string, dtypes.string
+  def element_spec(self):
+    return (tensor_spec.TensorSpec([], dtypes.string),
+            tensor_spec.TensorSpec([], dtypes.string))

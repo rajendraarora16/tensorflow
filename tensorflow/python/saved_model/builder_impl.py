@@ -62,11 +62,12 @@ class _SavedModelBuilder(object):
   with the shared set of variables and assets.
 
   Typical usage for the `SavedModelBuilder`:
+
   ```python
   ...
-  builder = tf.saved_model.Builder(export_dir)
+  builder = tf.compat.v1.saved_model.Builder(export_dir)
 
-  with tf.Session(graph=tf.Graph()) as sess:
+  with tf.compat.v1.Session(graph=tf.Graph()) as sess:
     ...
     builder.add_meta_graph_and_variables(sess,
                                     ["foo-tag"],
@@ -74,7 +75,7 @@ class _SavedModelBuilder(object):
                                     assets_list=foo_assets)
   ...
 
-  with tf.Session(graph=tf.Graph()) as sess:
+  with tf.compat.v1.Session(graph=tf.Graph()) as sess:
     ...
     builder.add_meta_graph(["bar-tag", "baz-tag"])
   ...
@@ -95,11 +96,13 @@ class _SavedModelBuilder(object):
 
     self._export_dir = export_dir
     if file_io.file_exists(export_dir):
-      raise AssertionError(
-          "Export directory already exists. Please specify a different export "
-          "directory: %s" % export_dir)
-
-    file_io.recursive_create_dir(self._export_dir)
+      if file_io.list_directory(export_dir):
+        raise AssertionError(
+            "Export directory already exists, and isn't empty. Please choose "
+            "a different export directory, or delete all the contents of the "
+            "specified directory: %s" % export_dir)
+    else:
+      file_io.recursive_create_dir(self._export_dir)
 
     # Boolean to track whether variables and assets corresponding to the
     # SavedModel have been saved. Specifically, the first meta graph to be added
@@ -107,26 +110,6 @@ class _SavedModelBuilder(object):
     # on the SavedModel MUST use the add_meta_graph() API which does not save
     # weights.
     self._has_saved_variables = False
-
-  def _copy_assets_to_destination_dir(self, asset_filename_map):
-    """Copy all assets from source path to destination path."""
-    assets_destination_dir = saved_model_utils.get_or_create_assets_dir(
-        self._export_dir)
-
-    # Copy each asset from source path to destination path.
-    for asset_basename, asset_source_filepath in asset_filename_map.items():
-      asset_destination_filepath = os.path.join(
-          compat.as_bytes(assets_destination_dir),
-          compat.as_bytes(asset_basename))
-
-      # Only copy the asset file to the destination if it does not already
-      # exist. This is to ensure that an asset with the same name defined as
-      # part of multiple graphs is only copied the first time.
-      if not file_io.file_exists(asset_destination_filepath):
-        file_io.copy(asset_source_filepath, asset_destination_filepath)
-
-    tf_logging.info("Assets written to: %s",
-                    compat.as_text(assets_destination_dir))
 
   def _save_and_write_assets(self, meta_graph_def, assets_list=None):
     """Saves asset to the meta graph and writes asset files to disk.
@@ -145,7 +128,7 @@ class _SavedModelBuilder(object):
       return
 
     # Copy assets from source path to destination path.
-    self._copy_assets_to_destination_dir(asset_filename_map)
+    copy_assets_to_destination_dir(asset_filename_map, self._export_dir)
 
   def _tag_and_add_meta_graph(self, meta_graph_def, tags, signature_def_map):
     """Tags the meta graph def and adds it to the SavedModel.
@@ -172,14 +155,14 @@ class _SavedModelBuilder(object):
   def _validate_tensor_info(self, tensor_info):
     """Validates the `TensorInfo` proto.
 
-    Checks if the `encoding` (`name` or `coo_sparse`) and `dtype` fields exist
-    and are non-empty.
+    Checks if the `encoding` (`name` or `coo_sparse` or `type_spec`) and
+    `dtype` fields exist and are non-empty.
 
     Args:
       tensor_info: `TensorInfo` protocol buffer to validate.
 
     Raises:
-      AssertionError: If the `name` or `dtype` fields of the supplied
+      AssertionError: If the `encoding` or `dtype` fields of the supplied
           `TensorInfo` proto are not populated.
     """
     if tensor_info is None:
@@ -192,7 +175,10 @@ class _SavedModelBuilder(object):
           "All TensorInfo protos used in the SignatureDefs must have one of "
           "the 'encoding' fields (e.g., name or coo_sparse) set: %s"
           % tensor_info)
-    if tensor_info.dtype is types_pb2.DT_INVALID:
+    if tensor_info.WhichOneof("encoding") == "composite_tensor":
+      for component in tensor_info.composite_tensor.components:
+        self._validate_tensor_info(component)
+    elif tensor_info.dtype == types_pb2.DT_INVALID:
       raise AssertionError(
           "All TensorInfo protos used in the SignatureDefs must have the dtype "
           "field set: %s" % tensor_info)
@@ -270,8 +256,8 @@ class _SavedModelBuilder(object):
       train_op: Op or group of opts that trains the model when run. This will
         not be run automatically when the graph is loaded, instead saved in
         a SignatureDef accessible through the exported MetaGraph.
-      saver: An instance of tf.train.Saver that will be used to export the
-        metagraph. If None, a sharded Saver that restores all variables will
+      saver: An instance of tf.compat.v1.train.Saver that will be used to export
+        the metagraph. If None, a sharded Saver that restores all variables will
         be used.
 
     Raises:
@@ -350,7 +336,7 @@ class _SavedModelBuilder(object):
       strip_default_attrs: Boolean. If `True`, default-valued attributes will be
         removed from the NodeDefs. For a detailed guide, see
         [Stripping Default-Valued Attributes](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/saved_model/README.md#stripping-default-valued-attributes).
-      saver: An instance of tf.train.Saver that will be used to export the
+      saver: An instance of tf.compat.v1.train.Saver that will be used to export the
         metagraph and save variables. If None, a sharded Saver that restores
         all variables will be used.
 
@@ -413,7 +399,12 @@ class _SavedModelBuilder(object):
     in serialized format.
 
     Args:
-      as_text: Writes the SavedModel protocol buffer in text format to disk.
+      as_text: Writes the SavedModel protocol buffer in text format to
+        disk. Protocol buffers in text format are useful for debugging, but
+        parsing fails when it encounters an unknown field and so is not forward
+        compatible. This means changes to TensorFlow may prevent deployment of
+        new text format SavedModels to existing serving binaries. Do not deploy
+        `as_text` SavedModels to production.
 
     Returns:
       The path to which the SavedModel protocol buffer was written.
@@ -459,7 +450,7 @@ class SavedModelBuilder(_SavedModelBuilder):
     Args:
       assets_collection_to_add: The collection where the asset paths are setup.
     """
-    # Add assets to the collection with key `constants.ASSETS_KEY`, in the
+    # Add assets to the collection with key `saved_model.ASSETS_KEY`, in the
     # graph.
     asset_filename_map = _maybe_save_assets(_add_asset_to_collection,
                                             assets_collection_to_add)
@@ -470,7 +461,7 @@ class SavedModelBuilder(_SavedModelBuilder):
       return
 
     # Copy assets from source path to destination path.
-    self._copy_assets_to_destination_dir(asset_filename_map)
+    copy_assets_to_destination_dir(asset_filename_map, self._export_dir)
 
   def _maybe_add_main_op(self, main_op):
     """Adds main op to the SavedModel.
@@ -656,7 +647,7 @@ def _maybe_save_assets(write_fn, assets_to_add=None):
     if not asset_source_filepath:
       raise ValueError("Invalid asset filepath tensor %s" % asset_tensor)
 
-    asset_filename = _get_asset_filename_to_add(
+    asset_filename = get_asset_filename_to_add(
         asset_source_filepath, asset_filename_map)
 
     # Call the passed-in function that builds AssetFileDef proto and adds it
@@ -675,7 +666,7 @@ def _maybe_save_assets(write_fn, assets_to_add=None):
   return asset_filename_map
 
 
-def _get_asset_filename_to_add(asset_filepath, asset_filename_map):
+def get_asset_filename_to_add(asset_filepath, asset_filename_map):
   """Get a unique basename to add to the SavedModel if this file is unseen.
 
   Assets come from users as full paths, and we save them out to the
@@ -760,6 +751,27 @@ def _add_asset_to_metagraph(meta_graph_def, asset_filename, asset_tensor):
   asset_proto = meta_graph_def.asset_file_def.add()
   asset_proto.filename = asset_filename
   asset_proto.tensor_info.name = asset_tensor.name
+
+
+def copy_assets_to_destination_dir(asset_filename_map, destination_dir):
+  """Copy all assets from source path to destination path."""
+  assets_destination_dir = saved_model_utils.get_or_create_assets_dir(
+      destination_dir)
+
+  # Copy each asset from source path to destination path.
+  for asset_basename, asset_source_filepath in asset_filename_map.items():
+    asset_destination_filepath = os.path.join(
+        compat.as_bytes(assets_destination_dir),
+        compat.as_bytes(asset_basename))
+
+    # Only copy the asset file to the destination if it does not already
+    # exist. This is to ensure that an asset with the same name defined as
+    # part of multiple graphs is only copied the first time.
+    if not file_io.file_exists(asset_destination_filepath):
+      file_io.copy(asset_source_filepath, asset_destination_filepath)
+
+  tf_logging.info("Assets written to: %s",
+                  compat.as_text(assets_destination_dir))
 
 
 def _add_asset_to_collection(asset_filename, asset_tensor):

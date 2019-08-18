@@ -17,7 +17,6 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import os
 import warnings
 
 from absl.testing import parameterized
@@ -27,23 +26,24 @@ from tensorflow.core.protobuf import cluster_pb2
 from tensorflow.core.protobuf import config_pb2
 from tensorflow.python.client import session
 from tensorflow.python.compat import compat as forward_compat
+from tensorflow.python.data.kernel_tests import test_base
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.data.ops import iterator_ops
-from tensorflow.python.data.ops import readers
 from tensorflow.python.data.util import structure
 from tensorflow.python.eager import context
+from tensorflow.python.eager import def_function
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
 from tensorflow.python.framework import function
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
+from tensorflow.python.framework import tensor_spec
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import data_flow_ops
 from tensorflow.python.ops import functional_ops
-from tensorflow.python.ops import gen_dataset_ops
 from tensorflow.python.ops import gradients_impl
-from tensorflow.python.ops import io_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import parsing_ops
 from tensorflow.python.ops import script_ops
@@ -53,20 +53,20 @@ from tensorflow.python.training import server_lib
 from tensorflow.python.util import compat
 
 
-class IteratorTest(test.TestCase, parameterized.TestCase):
+class IteratorTest(test_base.DatasetTestBase, parameterized.TestCase):
 
-  @test_util.run_deprecated_v1
+  @test_util.deprecated_graph_mode_only
   def testNoGradients(self):
     component = constant_op.constant([1.])
     side = constant_op.constant(0.)
     add = lambda x: x + side
     dataset = dataset_ops.Dataset.from_tensor_slices(component).map(add)
-    value = dataset.make_one_shot_iterator().get_next()
+    value = dataset_ops.make_one_shot_iterator(dataset).get_next()
     self.assertIsNone(gradients_impl.gradients(value, component)[0])
     self.assertIsNone(gradients_impl.gradients(value, side)[0])
     self.assertIsNone(gradients_impl.gradients(value, [component, side])[0])
 
-  @test_util.run_deprecated_v1
+  @test_util.deprecated_graph_mode_only
   def testCapturingStateInOneShotRaisesException(self):
     var = variables.Variable(37.0, name="myvar")
     dataset = (
@@ -75,9 +75,9 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
     with self.assertRaisesRegexp(
         ValueError, r"`Dataset.make_one_shot_iterator\(\)` does not support "
         "datasets that capture stateful objects.+myvar"):
-      dataset.make_one_shot_iterator()
+      dataset_ops.make_one_shot_iterator(dataset)
 
-  @test_util.run_deprecated_v1
+  @test_util.deprecated_graph_mode_only
   def testOneShotIterator(self):
     components = (np.arange(7),
                   np.array([[1, 2, 3]]) * np.arange(7)[:, np.newaxis],
@@ -86,9 +86,9 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
     def _map_fn(x, y, z):
       return math_ops.square(x), math_ops.square(y), math_ops.square(z)
 
-    iterator = (
+    iterator = dataset_ops.make_one_shot_iterator(
         dataset_ops.Dataset.from_tensor_slices(components).map(_map_fn)
-        .repeat(14).make_one_shot_iterator())
+        .repeat(14))
     get_next = iterator.get_next()
 
     self.assertEqual([c.shape[1:] for c in components],
@@ -103,7 +103,7 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
       with self.assertRaises(errors.OutOfRangeError):
         sess.run(get_next)
 
-  @test_util.run_deprecated_v1
+  @test_util.deprecated_graph_mode_only
   def testOneShotIteratorCaptureByValue(self):
     components = (np.arange(7),
                   np.array([[1, 2, 3]]) * np.arange(7)[:, np.newaxis],
@@ -113,9 +113,9 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
     def _map_fn(x, y, z):
       return math_ops.square(x), math_ops.square(y), math_ops.square(z)
 
-    iterator = (
+    iterator = dataset_ops.make_one_shot_iterator(
         dataset_ops.Dataset.from_tensor_slices(tensor_components)
-        .map(_map_fn).repeat(14).make_one_shot_iterator())
+        .map(_map_fn).repeat(14))
     get_next = iterator.get_next()
 
     self.assertEqual([c.shape[1:] for c in components],
@@ -140,9 +140,9 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
       def _map_fn(x, y, z):
         return math_ops.square(x), math_ops.square(y), math_ops.square(z)
 
-      iterator = (
+      iterator = dataset_ops.make_one_shot_iterator(
           dataset_ops.Dataset.from_tensor_slices(components)
-          .map(_map_fn).repeat(14).make_one_shot_iterator())
+          .map(_map_fn).repeat(14))
       return iterator.get_next()
 
     server = server_lib.Server.create_local_server()
@@ -166,10 +166,10 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
         with self.assertRaises(errors.OutOfRangeError):
           sess.run(get_next)
 
-  @test_util.run_deprecated_v1
+  @test_util.deprecated_graph_mode_only
   def testOneShotIteratorNonBlocking(self):
     dataset = dataset_ops.Dataset.from_tensors([1, 2, 3]).map(lambda x: x * x)
-    iterator = dataset.make_one_shot_iterator()
+    iterator = dataset_ops.make_one_shot_iterator(dataset)
     next_element = iterator.get_next()
 
     # Create a session with a single thread to ensure that the
@@ -205,27 +205,25 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
                        len([None for r in results if r is None]))
       self.assertAllEqual([[1, 4, 9]], [r for r in results if r is not None])
 
-  @test_util.run_deprecated_v1
+  @test_util.deprecated_graph_mode_only
   def testOneShotIteratorInitializerFails(self):
     # Define a dataset whose initialization will always fail.
-    dataset = dataset_ops.Dataset.from_tensors(
-        array_ops.check_numerics(
-            constant_op.constant(1.0) / constant_op.constant(0.0), "oops"))
-    iterator = dataset.make_one_shot_iterator()
+    dataset = dataset_ops.Dataset.from_tensors(array_ops.gather([0], [4]))
+    iterator = dataset_ops.make_one_shot_iterator(dataset)
     next_element = iterator.get_next()
 
     with self.cached_session() as sess:
-      with self.assertRaisesRegexp(errors.InvalidArgumentError, "oops"):
+      with self.assertRaisesRegexp(errors.InvalidArgumentError, ""):
         sess.run(next_element)
 
       # Test that subsequent attempts to use the iterator also fail.
-      with self.assertRaisesRegexp(errors.InvalidArgumentError, "oops"):
+      with self.assertRaisesRegexp(errors.InvalidArgumentError, ""):
         sess.run(next_element)
 
     with self.cached_session() as sess:
 
       def consumer_thread():
-        with self.assertRaisesRegexp(errors.InvalidArgumentError, "oops"):
+        with self.assertRaisesRegexp(errors.InvalidArgumentError, ""):
           sess.run(next_element)
 
       num_threads = 8
@@ -237,6 +235,7 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
       for t in threads:
         t.join()
 
+  @test_util.deprecated_graph_mode_only
   def testSimpleSharedResource(self):
     components = (np.array(1, dtype=np.int64),
                   np.array([1, 2, 3], dtype=np.int64),
@@ -249,10 +248,10 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
     # first session (initializing the iterator) is visible in the
     # second session.
     with ops.Graph().as_default():
-      iterator = (
-          dataset_ops.Dataset.from_tensors(components)
-          .map(lambda x, y, z: (x, y, z)).make_initializable_iterator(
-              shared_name="shared_iterator"))
+      iterator = dataset_ops.make_initializable_iterator(
+          dataset_ops.Dataset.from_tensors(
+              components).map(lambda x, y, z: (x, y, z)),
+          shared_name="shared_iterator")
       init_op = iterator.initializer
       get_next = iterator.get_next()
 
@@ -286,12 +285,11 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
         with self.assertRaises(errors.OutOfRangeError):
           sess.run(get_next)
 
-  @test_util.run_deprecated_v1
+  @test_util.deprecated_graph_mode_only
   def testNotInitializedError(self):
     components = (np.array(1), np.array([1, 2, 3]), np.array(37.0))
-    iterator = (
-        dataset_ops.Dataset.from_tensors(components)
-        .make_initializable_iterator())
+    iterator = dataset_ops.make_initializable_iterator(
+        dataset_ops.Dataset.from_tensors(components))
     get_next = iterator.get_next()
 
     with self.cached_session() as sess:
@@ -299,22 +297,27 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
                                    "iterator has not been initialized"):
         sess.run(get_next)
 
-  @test_util.run_deprecated_v1
+  @test_util.deprecated_graph_mode_only
   def testReinitializableIterator(self):
     dataset_3 = dataset_ops.Dataset.from_tensors(
         constant_op.constant([1, 2, 3]))
     dataset_4 = dataset_ops.Dataset.from_tensors(
         constant_op.constant([4, 5, 6, 7]))
-    iterator = iterator_ops.Iterator.from_structure(dataset_3.output_types,
-                                                    [None])
+    iterator = iterator_ops.Iterator.from_structure(
+        dataset_ops.get_legacy_output_types(dataset_3), [None])
 
     dataset_3_init_op = iterator.make_initializer(dataset_3)
     dataset_4_init_op = iterator.make_initializer(dataset_4)
     get_next = iterator.get_next()
 
-    self.assertEqual(dataset_3.output_types, iterator.output_types)
-    self.assertEqual(dataset_4.output_types, iterator.output_types)
-    self.assertEqual([None], iterator.output_shapes.as_list())
+    self.assertEqual(
+        dataset_ops.get_legacy_output_types(dataset_3),
+        dataset_ops.get_legacy_output_types(iterator))
+    self.assertEqual(
+        dataset_ops.get_legacy_output_types(dataset_4),
+        dataset_ops.get_legacy_output_types(iterator))
+    self.assertEqual(
+        [None], dataset_ops.get_legacy_output_shapes(iterator).as_list())
 
     with self.cached_session() as sess:
       # The iterator is initially uninitialized.
@@ -339,7 +342,7 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
       with self.assertRaises(errors.OutOfRangeError):
         sess.run(get_next)
 
-  @test_util.run_deprecated_v1
+  @test_util.deprecated_graph_mode_only
   def testReinitializableIteratorWithFunctions(self):
 
     def g():
@@ -399,22 +402,24 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
               (constant_op.constant([1, 2, 3], dtype=dtypes.int64),
                constant_op.constant([4., 5., 6., 7.], dtype=dtypes.float64))))
 
-  @test_util.run_deprecated_v1
+  @test_util.deprecated_graph_mode_only
   def testIteratorStringHandle(self):
     dataset_3 = dataset_ops.Dataset.from_tensor_slices([1, 2, 3])
     dataset_4 = dataset_ops.Dataset.from_tensor_slices([10, 20, 30, 40])
 
-    iterator_3 = dataset_3.make_one_shot_iterator()
-    iterator_4 = dataset_4.make_one_shot_iterator()
+    iterator_3 = dataset_ops.make_one_shot_iterator(dataset_3)
+    iterator_4 = dataset_ops.make_one_shot_iterator(dataset_4)
 
     handle_placeholder = array_ops.placeholder(dtypes.string, shape=[])
     feedable_iterator = iterator_ops.Iterator.from_string_handle(
-        handle_placeholder, dataset_3.output_types, dataset_3.output_shapes)
+        handle_placeholder, dataset_ops.get_legacy_output_types(dataset_3),
+        dataset_ops.get_legacy_output_shapes(dataset_3))
     next_element = feedable_iterator.get_next()
 
-    self.assertEqual(dataset_3.output_types, feedable_iterator.output_types)
-    self.assertEqual(dataset_4.output_types, feedable_iterator.output_types)
-    self.assertEqual([], feedable_iterator.output_shapes)
+    self.assertTrue(
+        structure.are_compatible(
+            dataset_ops.get_structure(dataset_3),
+            dataset_ops.get_structure(feedable_iterator)))
 
     with self.cached_session() as sess:
       iterator_3_handle = sess.run(iterator_3.string_handle())
@@ -455,23 +460,25 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
         sess.run(
             next_element, feed_dict={handle_placeholder: iterator_4_handle})
 
-  @test_util.run_deprecated_v1
+  @test_util.deprecated_graph_mode_only
   def testIteratorStringHandleFuture(self):
     with forward_compat.forward_compatibility_horizon(2018, 8, 4):
       dataset_3 = dataset_ops.Dataset.from_tensor_slices([1, 2, 3])
       dataset_4 = dataset_ops.Dataset.from_tensor_slices([10, 20, 30, 40])
 
-      iterator_3 = dataset_3.make_one_shot_iterator()
-      iterator_4 = dataset_4.make_one_shot_iterator()
+      iterator_3 = dataset_ops.make_one_shot_iterator(dataset_3)
+      iterator_4 = dataset_ops.make_one_shot_iterator(dataset_4)
 
       handle_placeholder = array_ops.placeholder(dtypes.string, shape=[])
       feedable_iterator = iterator_ops.Iterator.from_string_handle(
-          handle_placeholder, dataset_3.output_types, dataset_3.output_shapes)
+          handle_placeholder, dataset_ops.get_legacy_output_types(dataset_3),
+          dataset_ops.get_legacy_output_shapes(dataset_3))
       next_element = feedable_iterator.get_next()
 
-      self.assertEqual(dataset_3.output_types, feedable_iterator.output_types)
-      self.assertEqual(dataset_4.output_types, feedable_iterator.output_types)
-      self.assertEqual([], feedable_iterator.output_shapes)
+      self.assertTrue(
+          structure.are_compatible(
+              dataset_ops.get_structure(dataset_3),
+              dataset_ops.get_structure(feedable_iterator)))
 
       with self.cached_session() as sess:
         iterator_3_handle = sess.run(iterator_3.string_handle())
@@ -519,13 +526,13 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
           sess.run(
               next_element, feed_dict={handle_placeholder: iterator_4_handle})
 
-  @test_util.run_deprecated_v1
+  @test_util.deprecated_graph_mode_only
   def testIteratorStringHandleReuseTensorObject(self):
     dataset = dataset_ops.Dataset.from_tensor_slices([1, 2, 3])
-    one_shot_iterator = dataset.make_one_shot_iterator()
-    initializable_iterator = dataset.make_initializable_iterator()
+    one_shot_iterator = dataset_ops.make_one_shot_iterator(dataset)
+    initializable_iterator = dataset_ops.make_initializable_iterator(dataset)
     structure_iterator = iterator_ops.Iterator.from_structure(
-        dataset.output_types)
+        dataset_ops.get_legacy_output_types(dataset))
 
     created_ops = len(ops.get_default_graph().get_operations())
 
@@ -548,7 +555,7 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
     self.assertEqual("foo_1", handle_with_same_name.op.name)
     self.assertIsNot(handle_with_name, handle_with_same_name)
 
-  @test_util.run_deprecated_v1
+  @test_util.deprecated_graph_mode_only
   def testIteratorStringHandleError(self):
     dataset_int_scalar = (
         dataset_ops.Dataset.from_tensor_slices([1, 2, 3]).repeat())
@@ -564,10 +571,10 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
         handle_placeholder, dtypes.int32)
 
     with self.cached_session() as sess:
-      handle_int_scalar = sess.run(
-          dataset_int_scalar.make_one_shot_iterator().string_handle())
-      handle_float_vector = sess.run(
-          dataset_float_vector.make_one_shot_iterator().string_handle())
+      handle_int_scalar = sess.run(dataset_ops.make_one_shot_iterator(
+          dataset_int_scalar).string_handle())
+      handle_float_vector = sess.run(dataset_ops.make_one_shot_iterator(
+          dataset_float_vector).string_handle())
 
       self.assertEqual(1,
                        sess.run(
@@ -589,20 +596,21 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
             feedable_int_vector.get_next(),
             feed_dict={handle_placeholder: handle_float_vector}))
 
-  @test_util.run_deprecated_v1
+  @test_util.deprecated_graph_mode_only
   def testRemoteIteratorUsingRemoteCallOpDirectSession(self):
     worker_config = config_pb2.ConfigProto()
     worker_config.device_count["CPU"] = 3
 
     with ops.device("/job:localhost/replica:0/task:0/cpu:1"):
       dataset_3 = dataset_ops.Dataset.from_tensor_slices([1, 2, 3])
-      iterator_3 = dataset_3.make_one_shot_iterator()
+      iterator_3 = dataset_ops.make_one_shot_iterator(dataset_3)
       iterator_3_handle = iterator_3.string_handle()
 
     @function.Defun(dtypes.string)
     def _remote_fn(h):
       remote_iterator = iterator_ops.Iterator.from_string_handle(
-          h, dataset_3.output_types, dataset_3.output_shapes)
+          h, dataset_ops.get_legacy_output_types(dataset_3),
+          dataset_ops.get_legacy_output_shapes(dataset_3))
       return remote_iterator.get_next()
 
     with ops.device("/job:localhost/replica:0/task:0/cpu:0"):
@@ -646,7 +654,7 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
                 target_placeholder: "/job:localhost/replica:0/task:0/cpu:1"
             })
 
-  @test_util.run_deprecated_v1
+  @test_util.deprecated_graph_mode_only
   def testRemoteIteratorUsingRemoteCallOpMultiWorkers(self):
     s1 = server_lib.Server.create_local_server()
     s2 = server_lib.Server.create_local_server()
@@ -669,7 +677,7 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
     for device in worker_devices:
       with ops.device(device):
         src = dataset_ops.Dataset.from_tensor_slices([device])
-        itr = src.make_one_shot_iterator()
+        itr = dataset_ops.make_one_shot_iterator(src)
         itr_handles.append(itr.string_handle())
 
     targets = dataset_ops.Dataset.from_tensor_slices(worker_devices)
@@ -678,7 +686,8 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
     @function.Defun(dtypes.string)
     def loading_func(h):
       remote_itr = iterator_ops.Iterator.from_string_handle(
-          h, itr.output_types, itr.output_shapes)
+          h, dataset_ops.get_legacy_output_types(itr),
+          dataset_ops.get_legacy_output_shapes(itr))
       return remote_itr.get_next()
 
     def map_fn(target, handle):
@@ -687,7 +696,7 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
 
     with ops.device("/job:client"):
       client_dataset = dataset_ops.Dataset.zip((targets, handles)).map(map_fn)
-      itr = client_dataset.make_initializable_iterator()
+      itr = dataset_ops.make_initializable_iterator(client_dataset)
       n = itr.get_next()
 
     with session.Session(s3.target, config=config) as sess:
@@ -699,13 +708,14 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
       with self.assertRaises(errors.OutOfRangeError):
         sess.run(n)
 
+  @test_util.deprecated_graph_mode_only
   def testRemoteIteratorUsingRemoteCallOpDirectSessionGPUCPU(self):
     if not test_util.is_gpu_available():
       self.skipTest("No GPU available")
 
     with ops.device("/job:localhost/replica:0/task:0/cpu:0"):
       dataset_3 = dataset_ops.Dataset.from_tensor_slices([1, 2, 3])
-      iterator_3 = dataset_3.make_one_shot_iterator()
+      iterator_3 = dataset_ops.make_one_shot_iterator(dataset_3)
       iterator_3_handle = iterator_3.string_handle()
 
     def _encode_raw(byte_array):
@@ -715,13 +725,14 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
     def _remote_fn(h):
       handle = script_ops.py_func(_encode_raw, [h], dtypes.string)
       remote_iterator = iterator_ops.Iterator.from_string_handle(
-          handle, dataset_3.output_types, dataset_3.output_shapes)
+          handle, dataset_ops.get_legacy_output_types(dataset_3),
+          dataset_ops.get_legacy_output_shapes(dataset_3))
       return remote_iterator.get_next()
 
     with ops.device("/job:localhost/replica:0/task:0/device:GPU:0"):
       target_placeholder = array_ops.placeholder(dtypes.string, shape=[])
       iterator_3_handle_uint8 = parsing_ops.decode_raw(
-          bytes=iterator_3_handle, out_type=dtypes.uint8)
+          input_bytes=iterator_3_handle, out_type=dtypes.uint8)
       remote_op = functional_ops.remote_call(
           args=[iterator_3_handle_uint8],
           Tout=[dtypes.int32],
@@ -754,68 +765,9 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
                 target_placeholder: "/job:localhost/replica:0/task:0/cpu:0"
             })
 
-  @test_util.run_deprecated_v1
-  def testIncorrectIteratorRestore(self):
-
-    def _path():
-      return os.path.join(self.get_temp_dir(), "iterator")
-
-    def _save_op(iterator_resource):
-      iterator_state_variant = gen_dataset_ops.serialize_iterator(
-          iterator_resource)
-      save_op = io_ops.write_file(
-          _path(), parsing_ops.serialize_tensor(iterator_state_variant))
-      return save_op
-
-    def _restore_op(iterator_resource):
-      iterator_state_variant = parsing_ops.parse_tensor(
-          io_ops.read_file(_path()), dtypes.variant)
-      restore_op = gen_dataset_ops.deserialize_iterator(iterator_resource,
-                                                        iterator_state_variant)
-      return restore_op
-
-    def _build_range_dataset_graph():
-      start = 1
-      stop = 10
-      iterator = dataset_ops.Dataset.range(start,
-                                           stop).make_initializable_iterator()
-      init_op = iterator.initializer
-      get_next = iterator.get_next()
-      save_op = _save_op(iterator._iterator_resource)
-      restore_op = _restore_op(iterator._iterator_resource)
-      return init_op, get_next, save_op, restore_op
-
-    def _build_reader_dataset_graph():
-      filenames = ["test"]  # Does not exist but we don't care in this test.
-      iterator = readers.FixedLengthRecordDataset(
-          filenames, 1, 0, 0).make_initializable_iterator()
-      init_op = iterator.initializer
-      get_next_op = iterator.get_next()
-      save_op = _save_op(iterator._iterator_resource)
-      restore_op = _restore_op(iterator._iterator_resource)
-      return init_op, get_next_op, save_op, restore_op
-
-    # Saving iterator for RangeDataset graph.
-    with ops.Graph().as_default() as g:
-      init_op, _, save_op, _ = _build_range_dataset_graph()
-      with self.session(graph=g) as sess:
-        sess.run(init_op)
-        sess.run(save_op)
-
-    # Attempt to restore the saved iterator into an IteratorResource of
-    # incompatible type. An iterator of RangeDataset has output type int64,
-    # while an iterator of FixedLengthRecordDataset has output type string.
-    # So an InvalidArgumentError should be raised by
-    # IteratorResource::set_iterator.
-    with ops.Graph().as_default() as g:
-      _, _, _, restore_op = _build_reader_dataset_graph()
-      with self.session(graph=g) as sess:
-        with self.assertRaises(errors.InvalidArgumentError):
-          sess.run(restore_op)
-
-  @test_util.run_deprecated_v1
+  @test_util.deprecated_graph_mode_only
   def testRepeatedGetNextWarning(self):
-    iterator = dataset_ops.Dataset.range(10).make_one_shot_iterator()
+    iterator = dataset_ops.make_one_shot_iterator(dataset_ops.Dataset.range(10))
     warnings.simplefilter("always")
     with warnings.catch_warnings(record=True) as w:
       for _ in range(100):
@@ -825,56 +777,138 @@ class IteratorTest(test.TestCase, parameterized.TestCase):
       self.assertIn(
           iterator_ops.GET_NEXT_CALL_WARNING_MESSAGE, str(warning.message))
 
-  def testEagerIteratorAsync(self):
-    with context.eager_mode(), context.execution_mode(context.ASYNC):
-      val = 0
-      dataset = dataset_ops.Dataset.range(10)
-      for foo in dataset:
-        self.assertEqual(val, foo.numpy())
-        val += 1
-
   # pylint: disable=g-long-lambda
   @parameterized.named_parameters(
       ("Tensor", lambda: constant_op.constant(37.0),
-       structure.TensorStructure(dtypes.float32, []),
-       ops.Tensor, dtypes.float32, []),
+       tensor_spec.TensorSpec([],
+                              dtypes.float32), ops.Tensor, dtypes.float32, []),
       ("SparseTensor", lambda: sparse_tensor.SparseTensor(
-          indices=[[0]], values=constant_op.constant([0], dtype=dtypes.int32),
-          dense_shape=[1]),
-       structure.SparseTensorStructure(dtypes.int32, [1]),
+          indices=[[0]],
+          values=constant_op.constant([0], dtype=dtypes.int32),
+          dense_shape=[1]), sparse_tensor.SparseTensorSpec([1], dtypes.int32),
        sparse_tensor.SparseTensor, dtypes.int32, [1]),
       ("Nest", lambda: {
           "a": constant_op.constant(37.0),
-          "b": (constant_op.constant(["Foo"]), constant_op.constant("Bar"))},
-       structure.NestedStructure({
-           "a": structure.TensorStructure(dtypes.float32, []),
-           "b": (structure.TensorStructure(dtypes.string, [1]),
-                 structure.TensorStructure(dtypes.string, []))}),
-       {"a": ops.Tensor, "b": (ops.Tensor, ops.Tensor)},
-       {"a": dtypes.float32, "b": (dtypes.string, dtypes.string)},
-       {"a": [], "b": ([1], [])}),
+          "b": (constant_op.constant(["Foo"]), constant_op.constant("Bar"))
+      }, {
+          "a":
+              tensor_spec.TensorSpec([], dtypes.float32),
+          "b": (tensor_spec.TensorSpec(
+              [1], dtypes.string), tensor_spec.TensorSpec([], dtypes.string))
+      }, {
+          "a": ops.Tensor,
+          "b": (ops.Tensor, ops.Tensor)
+      }, {
+          "a": dtypes.float32,
+          "b": (dtypes.string, dtypes.string)
+      }, {
+          "a": [],
+          "b": ([1], [])
+      }),
   )
   def testIteratorStructure(self, tf_value_fn, expected_element_structure,
                             expected_output_classes, expected_output_types,
                             expected_output_shapes):
     tf_value = tf_value_fn()
-    iterator = dataset_ops.Dataset.from_tensors(
-        tf_value).make_one_shot_iterator()
+    iterator = dataset_ops.make_one_shot_iterator(
+        dataset_ops.Dataset.from_tensors(tf_value))
 
-    self.assertTrue(expected_element_structure.is_compatible_with(
-        iterator._element_structure))
-    self.assertTrue(iterator._element_structure.is_compatible_with(
-        expected_element_structure))
-
-    self.assertEqual(expected_output_classes, iterator.output_classes)
-    self.assertEqual(expected_output_types, iterator.output_types)
-    self.assertEqual(expected_output_shapes, iterator.output_shapes)
+    self.assertTrue(
+        structure.are_compatible(
+            dataset_ops.get_structure(iterator), expected_element_structure))
+    self.assertEqual(expected_output_classes,
+                     dataset_ops.get_legacy_output_classes(iterator))
+    self.assertEqual(expected_output_types,
+                     dataset_ops.get_legacy_output_types(iterator))
+    self.assertEqual(expected_output_shapes,
+                     dataset_ops.get_legacy_output_shapes(iterator))
 
   def testIteratorGetNextName(self):
     with ops.Graph().as_default():
-      iterator = dataset_ops.Dataset.from_tensors(37.0).make_one_shot_iterator()
+      iterator = dataset_ops.make_one_shot_iterator(
+          dataset_ops.Dataset.from_tensors(37.0))
       next_element = iterator.get_next(name="overridden_name")
       self.assertEqual("overridden_name", next_element.op.name)
+
+  @parameterized.named_parameters(
+      ("Async", context.ASYNC),
+      ("Sync", context.SYNC),
+  )
+  def testIteratorEagerIteration(self, execution_mode):
+    with context.eager_mode(), context.execution_mode(execution_mode):
+      val = 0
+      dataset = dataset_ops.Dataset.range(10)
+      iterator = iter(dataset)
+      for foo in iterator:
+        self.assertEqual(val, foo.numpy())
+        val += 1
+
+  @test_util.run_v2_only
+  def testIteratorV2Function(self):
+
+    queue = data_flow_ops.FIFOQueue(10, dtypes.int64)
+
+    @def_function.function
+    def fn():
+      dataset = dataset_ops.Dataset.range(10)
+      iterator = iter(dataset)
+      for _ in range(10):
+        queue.enqueue(next(iterator))
+
+    fn()
+
+    for i in range(10):
+      self.assertEqual(queue.dequeue().numpy(), i)
+
+  @test_util.run_v2_only
+  def testIteratorV2FunctionError(self):
+    # In this test we verify that a function that raises an error ends up
+    # properly deallocating the iterator resource.
+
+    queue = data_flow_ops.FIFOQueue(10, dtypes.int64)
+    queue.enqueue(0)
+
+    def init_fn(n):
+      return n
+
+    def next_fn(_):
+      ds = dataset_ops.Dataset.range(0)
+      return next(iter(ds))
+
+    def finalize_fn(n):
+      queue.enqueue(0)
+      return n
+
+    @def_function.function
+    def fn():
+      dataset = dataset_ops._GeneratorDataset(1, init_fn, next_fn, finalize_fn)
+      iterator = iter(dataset)
+      next(iterator)
+
+    with self.assertRaises(errors.OutOfRangeError):
+      fn()
+
+    self.assertEqual(queue.size().numpy(), 2)
+
+  @test_util.run_v2_only
+  def testLimitedRetracing(self):
+    trace_count = [0]
+
+    @def_function.function
+    def f(iterator):
+      trace_count[0] += 1
+      counter = np.int64(0)
+      for elem in iterator:
+        counter += elem
+      return counter
+
+    dataset = dataset_ops.Dataset.range(5)
+    dataset2 = dataset_ops.Dataset.range(10)
+
+    for _ in range(10):
+      self.assertEqual(self.evaluate(f(iter(dataset))), 10)
+      self.assertEqual(self.evaluate(f(iter(dataset2))), 45)
+      self.assertEqual(trace_count[0], 1)
 
 
 if __name__ == "__main__":
