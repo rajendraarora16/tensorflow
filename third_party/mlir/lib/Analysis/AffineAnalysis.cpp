@@ -21,15 +21,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Analysis/AffineAnalysis.h"
-#include "mlir/AffineOps/AffineOps.h"
 #include "mlir/Analysis/AffineStructures.h"
 #include "mlir/Analysis/Utils.h"
+#include "mlir/Dialect/AffineOps/AffineOps.h"
+#include "mlir/Dialect/StandardOps/Ops.h"
 #include "mlir/IR/AffineExprVisitor.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Function.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Operation.h"
-#include "mlir/StandardOps/Ops.h"
 #include "mlir/Support/MathExtras.h"
 #include "mlir/Support/STLExtras.h"
 #include "llvm/ADT/DenseMap.h"
@@ -372,7 +372,7 @@ static void addDomainConstraints(const FlatAffineConstraints &srcDomain,
 //   Source access function:
 //     (a0 * d0 + a1 * s0 + a2, b0 * d0 + b1 * s0 + b2)
 //
-//   Destination acceses function:
+//   Destination access function:
 //     (c0 * d0 + c1 * s0 + c2, f0 * d0 + f1 * s0 + f2)
 //
 // This method constructs the following equality constraints in

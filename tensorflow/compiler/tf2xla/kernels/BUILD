@@ -1,4 +1,4 @@
-load("//tensorflow:tensorflow.bzl", "tf_copts", "tf_kernel_library")
+load("//tensorflow:tensorflow.bzl", "tf_kernel_library")
 
 package(
     default_visibility = ["//tensorflow/compiler/tf2xla:internal"],
@@ -57,6 +57,7 @@ tf_kernel_library(
         "matrix_band_part_op.cc",
         "matrix_diag_ops.cc",
         "matrix_inverse_op.cc",
+        "matrix_solve_op.cc",
         "matrix_triangular_solve_op.cc",
         "mirror_pad_op.cc",
         "next_after_op.cc",
@@ -89,6 +90,7 @@ tf_kernel_library(
         "sequence_ops.cc",
         "shape_op.cc",
         "shape_util.cc",
+        "sharding_op.cc",
         "slice_op.cc",
         "softmax_op.cc",
         "sort_ops.cc",
@@ -106,6 +108,7 @@ tf_kernel_library(
         "topk_op.cc",
         "training_ops.cc",
         "transpose_op.cc",
+        "tridiagonal_ops.cc",
         "unary_ops.cc",
         "unary_ops_composition.cc",
         "unpack_op.cc",
@@ -166,6 +169,7 @@ tf_kernel_library(
         "//tensorflow/compiler/xla/client/lib:slicing",
         "//tensorflow/compiler/xla/client/lib:sorting",
         "//tensorflow/compiler/xla/client/lib:svd",
+        "//tensorflow/compiler/xla/client/lib:tridiagonal",
         "//tensorflow/core:bitwise_ops_op_lib",
         "//tensorflow/core:control_flow_ops_op_lib",
         "//tensorflow/core:data_flow_ops_op_lib",
@@ -244,6 +248,7 @@ cc_library(
         "//tensorflow/compiler/tf2xla:xla_compiler",
         "//tensorflow/compiler/xla:literal_util",
         "//tensorflow/compiler/xla:statusor",
+        "//tensorflow/compiler/xla:util",
         "//tensorflow/compiler/xla/client:xla_builder",
         "//tensorflow/compiler/xla/client/lib:arithmetic",
         "//tensorflow/compiler/xla/client/lib:constants",
@@ -265,6 +270,7 @@ cc_library(
         "//tensorflow/compiler/xla:shape_util",
         "//tensorflow/compiler/xla:status_macros",
         "//tensorflow/compiler/xla:statusor",
+        "//tensorflow/compiler/xla:util",
         "//tensorflow/compiler/xla:xla_data_proto",
         "//tensorflow/compiler/xla/client:xla_builder",
         "//tensorflow/core:framework",

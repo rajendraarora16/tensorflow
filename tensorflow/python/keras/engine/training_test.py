@@ -39,9 +39,11 @@ from tensorflow.python.keras import keras_parameterized
 from tensorflow.python.keras import losses
 from tensorflow.python.keras import metrics as metrics_module
 from tensorflow.python.keras import testing_utils
-from tensorflow.python.keras.engine import training_utils
 from tensorflow.python.keras.callbacks import Callback
+from tensorflow.python.keras.engine import training_utils
 from tensorflow.python.keras.optimizer_v2 import gradient_descent
+from tensorflow.python.keras.utils import data_utils
+from tensorflow.python.keras.utils import np_utils
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import sparse_ops
@@ -241,6 +243,38 @@ class CompileTest(keras_parameterized.TestCase):
           sample_weight_mode={'unknown': 'temporal'},
           run_eagerly=testing_utils.should_run_eagerly(),
           experimental_run_tf_function=testing_utils.should_run_tf_function())
+
+  @keras_parameterized.run_all_keras_modes
+  def test_compile_with_session_kwargs(self):
+    model = testing_utils.get_small_sequential_mlp(
+        num_hidden=10, num_classes=2, input_dim=3)
+
+    # Test that unknown arguments are not accepted
+    with self.assertRaisesRegexp(
+        TypeError,
+        r'Invalid keyword argument'):
+      model.compile(
+          optimizer='adam',
+          loss='mse',
+          foo=True)
+
+    if testing_utils.should_run_eagerly():
+      # Test that Session kwargs cannot be used with run_eagerly
+      with self.assertRaisesRegexp(
+          ValueError,
+          r'not supported when `run_eagerly=True`'):
+        model.compile(
+            optimizer='adam',
+            loss='mse',
+            run_eagerly=True,
+            feed_dict={})
+    else:
+      # Test that Session kwargs trigger legacy path execution
+      model.compile(
+          optimizer='adam',
+          loss='mse',
+          feed_dict={})
+      self.assertFalse(model._experimental_run_tf_function)
 
 
 class TrainingTest(keras_parameterized.TestCase):
@@ -904,6 +938,23 @@ class TrainingTest(keras_parameterized.TestCase):
     x2 = model.predict(val_a)
     self.assertAllClose(x1, x2, atol=1e-7)
 
+  def test_weight_deduplication_in_methods(self):
+    inp = keras.layers.Input(shape=(1,))
+    bn = keras.layers.BatchNormalization()
+    d = keras.layers.Dense(1)
+
+    m0 = keras.models.Model(inp, d(bn(inp)))
+    m1 = keras.models.Model(inp, d(bn(inp)))
+
+    x0 = m0(inp)
+    x1 = m1(inp)
+    x = keras.layers.Add()([x0, x1])
+
+    model = keras.models.Model(inp, x)
+    self.assertLen(model.trainable_weights, 4)
+    self.assertLen(model.non_trainable_weights, 2)
+    self.assertLen(model.weights, 6)
+
   @keras_parameterized.run_all_keras_modes
   def test_weight_deduplication(self):
     class WatchingLayer(keras.layers.Layer):
@@ -1187,8 +1238,8 @@ class TrainingTest(keras_parameterized.TestCase):
     with context.eager_mode():
       np.random.seed(1337)
       train_x = np.ones((100, 4))
-      train_y = keras.utils.to_categorical(np.random.randint(0, 1,
-                                                             size=(100, 1)), 2)
+      train_y = np_utils.to_categorical(
+          np.random.randint(0, 1, size=(100, 1)), 2)
 
       reference_model = testing_utils.get_small_sequential_mlp(16, 2,
                                                                input_dim=4)
@@ -1380,8 +1431,7 @@ class TrainingTest(keras_parameterized.TestCase):
 
     self.assertLen(model.trainable_variables, 3)
 
-  # TODO(b/131372221): Make this work with subclassed models.
-  @keras_parameterized.run_with_all_model_types(exclude_models=['subclass'])
+  @keras_parameterized.run_with_all_model_types
   @keras_parameterized.run_all_keras_modes
   @testing_utils.enable_v2_dtype_behavior
   def test_model_dtype(self):
@@ -1408,6 +1458,25 @@ class TrainingTest(keras_parameterized.TestCase):
       model.fit(x, y)
       model.test_on_batch(x, y)
       model(x)
+
+  @keras_parameterized.run_with_all_model_types
+  @keras_parameterized.run_all_keras_modes
+  @testing_utils.enable_v2_dtype_behavior
+  def test_model_input_dtype(self):
+    model = testing_utils.get_small_mlp(1, 10, 10)
+    model.compile(
+        'sgd',
+        'mse',
+        run_eagerly=testing_utils.should_run_eagerly(),
+        experimental_run_tf_function=testing_utils.should_run_tf_function())
+    x = np.ones((10, 10)).astype(np.float64)
+    y = np.ones((10, 10)).astype(np.float64)
+    dataset = dataset_ops.Dataset.from_tensor_slices((x, y)).batch(2)
+    model.fit(dataset)
+    self.assertEqual(model._compute_dtype, 'float32')
+    # Input dtype should match the model dtype, even if the inputs passed to the
+    # model have a different dtype.
+    self.assertEqual(model.inputs[0].dtype, 'float32')
 
   @keras_parameterized.run_all_keras_modes(always_skip_v1=True)
   def test_subclassed_model_with_training_arg(self):
@@ -1582,7 +1651,7 @@ class TestExceptionsAndWarnings(keras_parameterized.TestCase):
   @keras_parameterized.run_all_keras_modes
   def test_invalid_batch_size_argument_with_sequence_input(self):
 
-    class DummySequence(keras.utils.Sequence):
+    class DummySequence(data_utils.Sequence):
 
       def __getitem__(self, idx):
         return np.zeros([10, 2]), np.ones([10, 4])
@@ -1609,6 +1678,18 @@ class TestExceptionsAndWarnings(keras_parameterized.TestCase):
     with self.assertRaisesRegexp(
         ValueError, 'The `batch_size` argument must not be specified'):
       model.predict(DummySequence(), batch_size=2)
+
+  @keras_parameterized.run_with_all_model_types
+  @keras_parameterized.run_all_keras_modes
+  def test_sparse_op_with_op_layer(self):
+    inputs = keras.layers.Input(shape=(2,), sparse=True, name='sparse_tensor')
+    output = sparse_ops.sparse_minimum(inputs, inputs)
+    with self.assertRaisesRegexp(
+        ValueError,
+        'Sparse ops are not supported with functional models with built-in '
+        'layer wrapping'
+    ):
+      keras.Model([inputs], output)
 
 
 class LossWeightingTest(keras_parameterized.TestCase):
@@ -1644,8 +1725,8 @@ class LossWeightingTest(keras_parameterized.TestCase):
     int_y_test = y_test.copy()
     int_y_train = y_train.copy()
     # convert class vectors to binary class matrices
-    y_train = keras.utils.to_categorical(y_train, num_classes)
-    y_test = keras.utils.to_categorical(y_test, num_classes)
+    y_train = np_utils.to_categorical(y_train, num_classes)
+    y_test = np_utils.to_categorical(y_test, num_classes)
     test_ids = np.where(int_y_test == np.array(weighted_class))[0]
 
     class_weight = dict([(i, 1.) for i in range(num_classes)])
@@ -1713,8 +1794,8 @@ class LossWeightingTest(keras_parameterized.TestCase):
     int_y_test = y_test.copy()
     int_y_train = y_train.copy()
     # convert class vectors to binary class matrices
-    y_train = keras.utils.to_categorical(y_train, num_classes)
-    y_test = keras.utils.to_categorical(y_test, num_classes)
+    y_train = np_utils.to_categorical(y_train, num_classes)
+    y_test = np_utils.to_categorical(y_test, num_classes)
     test_ids = np.where(int_y_test == np.array(weighted_class))[0]
 
     sample_weight = np.ones((y_train.shape[0]))
@@ -1783,8 +1864,8 @@ class LossWeightingTest(keras_parameterized.TestCase):
       int_y_test = y_test.copy()
       int_y_train = y_train.copy()
       # convert class vectors to binary class matrices
-      y_train = keras.utils.to_categorical(y_train, num_classes)
-      y_test = keras.utils.to_categorical(y_test, num_classes)
+      y_train = np_utils.to_categorical(y_train, num_classes)
+      y_test = np_utils.to_categorical(y_test, num_classes)
       test_ids = np.where(int_y_test == np.array(weighted_class))[0]
 
       sample_weight = np.ones((y_train.shape[0]))
@@ -1909,7 +1990,7 @@ class LossWeightingTest(keras_parameterized.TestCase):
           input_shape=(input_dim,),
           num_classes=num_classes)
       # convert class vectors to binary class matrices
-      y_train = keras.utils.to_categorical(y_train, num_classes)
+      y_train = np_utils.to_categorical(y_train, num_classes)
       class_weight = dict([(i, 1.) for i in range(num_classes)])
 
       del class_weight[1]
@@ -3518,6 +3599,49 @@ class TestTrainingWithMetrics(keras_parameterized.TestCase):
     expected_val = [1., 0.9, 0.8, 0.7, 0.6]
     for key in ['loss', 'mae_1', 'mae_2', 'mae_3']:
       self.assertAllClose(history.history[key], expected_val, 1e-3)
+
+  @keras_parameterized.run_all_keras_modes
+  def test_add_metric_order(self):
+
+    class MyLayer(keras.layers.Layer):
+
+      def call(self, inputs, training=None, mask=None):
+        self.add_metric(
+            array_ops.ones([32]) * 2.0, name='two', aggregation='mean')
+        return inputs
+
+    class MyModel(keras.Model):
+
+      def __init__(self, **kwargs):
+        super(MyModel, self).__init__(**kwargs)
+        self._sampler = MyLayer(name='sampler')
+
+      def call(self, inputs, training=None, mask=None):
+        z = self._sampler(inputs)
+        self.add_metric(
+            array_ops.ones([32]) * 1.0, name='one', aggregation='mean')
+        self.add_metric(
+            array_ops.ones([32]) * 3.0, name='three', aggregation='mean')
+        return z
+
+    xdata = np.random.uniform(size=[32, 16]).astype(np.float32)
+    dataset_train = dataset_ops.Dataset.from_tensor_slices((xdata, xdata))
+    dataset_train = dataset_train.batch(32, drop_remainder=True)
+
+    model = MyModel()
+    model.compile(
+        optimizer='sgd',
+        loss='mse',
+        run_eagerly=testing_utils.should_run_eagerly(),
+        experimental_run_tf_function=testing_utils.should_run_tf_function())
+    history = model.fit(dataset_train, epochs=3)
+    self.assertDictEqual(
+        history.history, {
+            'loss': [0.0, 0.0, 0.0],
+            'three': [3.0, 3.0, 3.0],
+            'two': [2.0, 2.0, 2.0],
+            'one': [1.0, 1.0, 1.0]
+        })
 
   @keras_parameterized.run_all_keras_modes
   def test_model_with_nested_compiled_model(self):

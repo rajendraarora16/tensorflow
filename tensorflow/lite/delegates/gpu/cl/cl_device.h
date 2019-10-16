@@ -21,6 +21,7 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/cl/opencl_wrapper.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
+#include "tensorflow/lite/delegates/gpu/common/types.h"
 
 namespace tflite {
 namespace gpu {
@@ -64,17 +65,19 @@ struct DeviceInfo {
   explicit DeviceInfo(cl_device_id id);
 
   bool SupportsTextureArray() const;
+  bool SupportsImageBuffer() const;
 
   std::vector<std::string> extensions;
   bool supports_fp16;
   Vendor vendor;
   OpenCLVersion cl_version;
   int compute_units_count;
-  int image2d_max_width;
-  int image2d_max_height;
-  int image_buffer_max_size;
-  int image_array_max_layers;
-  int max_work_items_sizes[3];
+  uint64_t buffer_max_size;
+  uint64_t image2d_max_width;
+  uint64_t image2d_max_height;
+  uint64_t image_buffer_max_size;
+  uint64_t image_array_max_layers;
+  int3 max_work_group_sizes;
 
   AdrenoInfo adreno_info;
 };
@@ -103,6 +106,7 @@ class CLDevice {
   OpenCLVersion cl_version() const { return info_.cl_version; }
   bool SupportsFP16() const;
   bool SupportsTextureArray() const;
+  bool SupportsImageBuffer() const;
   bool SupportsExtension(const std::string& extension) const;
   bool IsAdreno() const;
   bool IsAdreno3xx() const;
@@ -110,6 +114,9 @@ class CLDevice {
   bool IsAdreno5xx() const;
   bool IsAdreno6xx() const;
   bool IsAdreno6xxOrHigher() const;
+  bool IsPowerVR() const;
+  bool IsNvidia() const;
+  bool IsMali() const;
 
   // To track bug on some Adreno. b/131099086
   bool SupportsOneLayerTextureArray() const;

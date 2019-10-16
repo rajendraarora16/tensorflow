@@ -19,6 +19,7 @@ limitations under the License.
 #include <string>
 
 #include "absl/types/span.h"
+#include "tensorflow/lite/delegates/gpu/cl/cl_device.h"
 #include "tensorflow/lite/delegates/gpu/cl/precision.h"
 #include "tensorflow/lite/delegates/gpu/cl/tensor_type.h"
 #include "tensorflow/lite/delegates/gpu/common/access_type.h"
@@ -35,83 +36,111 @@ namespace cl {
 
 std::string GetCommonDefines(CalculationsPrecision precision);
 
-std::string GetGlobalAddress(TensorStorageType storage_type,
-                             const std::string& size_name,
-                             const std::string& var_name, const std::string& x,
-                             const std::string& y, const std::string& z);
-std::string ReadGlobalFLT4(TensorStorageType storage_type,
-                           const std::string& tensor_name,
-                           const std::string& size_name, const std::string& x,
-                           const std::string& y, const std::string& z);
-std::string ReadGlobalFLT4(TensorStorageType storage_type,
-                           const std::string& tensor_name,
-                           const std::string& global_address);
-std::string WriteGlobalFLT4(TensorStorageType storage_type,
-                            const std::string& tensor_name,
-                            const std::string& size_name,
-                            const std::string& var_name, const std::string& x,
-                            const std::string& y, const std::string& z);
-std::string WriteGlobalFLT4(TensorStorageType storage_type,
-                            const std::string& tensor_name,
-                            const std::string& var_name,
-                            const std::string& global_address);
-
-std::string GetDataType(DataType type);
-std::string GetDataType4(DataType type);
-
-std::string GetTensorDeclaration(TensorStorageType storage_type,
-                                 AccessType access, DataType data_type);
-
-std::string GetTensorDeclaration(TensorStorageType storage_type,
-                                 const std::string& tensor_name,
-                                 AccessType access, DataType data_type);
-
-std::string GenerateGlobal3DCoords(TensorStorageType storage_type);
+enum class TextureAddressMode {
+  DONT_CARE,  // translated to CLK_ADDRESS_NONE
+  ZERO,       // translated to CLK_ADDRESS_CLAMP
+};
 
 class TensorCodeGenerator {
  public:
-  TensorCodeGenerator(const std::string& name,
-                      const std::string& uniform_size_name,
-                      TensorStorageType storage_type, AccessType access);
+  struct SizeVariablesNames {
+    SizeVariablesNames() = default;
+    SizeVariablesNames(const std::string& width_name,
+                       const std::string& height_name,
+                       const std::string& depth_name);
+    SizeVariablesNames(const std::string& width_name,
+                       const std::string& height_name,
+                       const std::string& depth_name,
+                       const std::string& batch_name);
 
+    std::string width = "unknown";
+    std::string height = "unknown";
+    std::string channels = "unknown";
+    std::string depth = "unknown";
+    std::string batch = "unknown";
+  };
+  TensorCodeGenerator() = default;
   TensorCodeGenerator(const std::string& name,
                       const std::string& uniform_size_name,
                       const TensorDescriptor& descriptor);
 
-  std::string GetDeclaration() const;
+  TensorCodeGenerator(const std::string& name, const SizeVariablesNames& sizes,
+                      const TensorDescriptor& descriptor);
 
   std::string GetDeclaration(AccessType access) const;
-
-  std::string Read3D(const std::string& x, const std::string& y,
-                     const std::string& z) const;
-
-  // Optimization for textures, so as in opencl we can use read_imagef for any
-  // texture type.
-  std::string ReadAsFloat3D(const std::string& x, const std::string& y,
-                            const std::string& z) const;
-
-  std::string Read3D(const std::string& global_address) const;
-
-  // Optimization for textures, so as in opencl we can use read_imagef for any
-  // texture type.
-  std::string ReadAsFloat3D(const std::string& global_address) const;
 
   std::string GetAddress(const std::string& var_name, const std::string& x,
                          const std::string& y, const std::string& z) const;
 
+  std::string GetAddress(const std::string& var_name, const std::string& x,
+                         const std::string& y, const std::string& z,
+                         const std::string& b) const;
+
+  // This function (and functions below) accept TextureAddressMode, but this
+  // argument applicable only for texture types. Buffer types ignore this
+  // parameter.
+  std::string Read3D(
+      const std::string& x, const std::string& y, const std::string& z,
+      TextureAddressMode address_mode = TextureAddressMode::DONT_CARE) const;
+
+  // Read4D supports BUFFER and IMAGE_BUFFER storage types.
+  std::string Read4D(
+      const std::string& x, const std::string& y, const std::string& z,
+      const std::string& b,
+      TextureAddressMode address_mode = TextureAddressMode::DONT_CARE) const;
+
+  // Optimization for textures, so as in opencl we can use read_imagef for any
+  // texture type.
+  std::string ReadAsFloat3D(
+      const std::string& x, const std::string& y, const std::string& z,
+      TextureAddressMode address_mode = TextureAddressMode::DONT_CARE) const;
+
+  std::string ReadAsFloat4D(
+      const std::string& x, const std::string& y, const std::string& z,
+      const std::string& b,
+      TextureAddressMode address_mode = TextureAddressMode::DONT_CARE) const;
+
   std::string Write3D(const std::string& var_name, const std::string& x,
                       const std::string& y, const std::string& z) const;
 
-  std::string Write3D(const std::string& var_name,
-                      const std::string& global_address) const;
+  // Write4D supports BUFFER and IMAGE_BUFFER storage types.
+  std::string Write4D(const std::string& var_name, const std::string& x,
+                      const std::string& y, const std::string& z,
+                      const std::string& b) const;
+
+  std::string Read(
+      const std::string& global_address,
+      TextureAddressMode address_mode = TextureAddressMode::DONT_CARE) const;
+  // Optimization for textures, so as in opencl we can use read_imagef for any
+  // texture type.
+  std::string ReadAsFloat(
+      const std::string& global_address,
+      TextureAddressMode address_mode = TextureAddressMode::DONT_CARE) const;
+  std::string Write(const std::string& var_name,
+                    const std::string& global_address) const;
 
  private:
-  std::string name_;
-  std::string uniform_size_name_;
-  TensorStorageType storage_type_;
-  AccessType access_;
-  DataType data_type_ = DataType::UNKNOWN;
+  std::string GetGlobalAddressNoDeclaration(const std::string& x,
+                                            const std::string& y,
+                                            const std::string& z) const;
+  std::string GetGlobalAddressNoDeclaration(const std::string& x,
+                                            const std::string& y,
+                                            const std::string& z,
+                                            const std::string& b) const;
+  std::string DeclareAddress(const std::string& var_name,
+                             const std::string& address) const;
+
+  std::string tensor_name_;
+  SizeVariablesNames sizes_;
+  TensorDescriptor descriptor_;
 };
+
+// Calculates correct X coordinate when stride != 1 and batch != 1 for
+// DHWBC4, HDWBC4, HWBC layouts
+std::string GetXStrideCorrected(const std::string& src_x,
+                                const std::string& batch_size,
+                                const std::string& stride_x,
+                                const std::string& padding_x);
 
 template <DataType S, typename T>
 void RearrangeWeightsToOHWI4I4O(const ::tflite::gpu::Tensor<OHWI, S>& weights,
@@ -150,7 +179,20 @@ void RearrangeWeightsToOHWI4I4O(const ::tflite::gpu::Tensor<OHWI, S>& weights,
   }
 }
 
-// returns float4 mask for last plane(batch of 4 channels)
+// Returns fastest TextureAddressMode that return ZERO for out-of-range image
+// coordinates.
+//
+// Unfortunately, CLK_ADDRESS_CLAMP is very slow on Adreno3xx and
+// we can observe huge register overhead when compared to other modes.
+
+// While using CLK_ADDRESS_NONE with out-of-range image coordinates is undefined
+// in the OpenCL specification, we have observed that CLK_ADDRESS_NONE works
+// like CLK_ADDRESS_CLAMP for out-of-range image coordinates for RGBA F16/F32
+// textures on Adreno3xx devices. Using CLK_ADDRESS_NONE is significantly faster
+// than CLK_ADDRESS_CLAMP on Adreno 3xx.
+TextureAddressMode GetFastestZeroMode(const CLDevice& device);
+
+// Returns float4 mask for last plane(batch of 4 channels)
 // assumes that plane size is 4;
 // for example we have 7 channels, in our data structures we align it to 8
 // but 8s-channel will be empty, then last plane (batch of 4 channels) will

@@ -65,7 +65,7 @@ class FromTensorConverter : public OpenClConverterImpl {
   static bool IsSupported(const ObjectDef& input, const ObjectDef& output) {
     return IsSupportedDataType(input.data_type) &&
            IsSupportedDataType(output.data_type) &&
-           // Output is always Buffer/BHWC
+           // Output is always Buffer/(BHWC|DHWC4)
            output.object_type == ObjectType::OPENCL_BUFFER &&
            (output.data_layout == DataLayout::BHWC ||
             output.data_layout == DataLayout::DHWC4) &&
@@ -87,11 +87,13 @@ class FromTensorConverter : public OpenClConverterImpl {
       const TensorObjectDef& input_def,
       const TensorObjectDef& output_def) const {
     return std::make_pair(
-        "__global " + GetDataType4(output_def.object_def.data_type) + "* dst",
+        "__global " + ToCLDataType(output_def.object_def.data_type, 4) +
+            "* dst",
         "dst[(d * size.y + y) * size.x + x] = " +
             (output_def.object_def.data_type == input_def.object_def.data_type
                  ? "input;"
-                 : "convert_" + GetDataType4(output_def.object_def.data_type) +
+                 : "convert_" +
+                       ToCLDataType(output_def.object_def.data_type, 4) +
                        "(input);"));
   }
 
@@ -99,7 +101,7 @@ class FromTensorConverter : public OpenClConverterImpl {
       const TensorObjectDef& input_def,
       const TensorObjectDef& output_def) const {
     return std::make_pair(
-        "__global " + GetDataType(output_def.object_def.data_type) + "* dst",
+        "__global " + ToCLDataType(output_def.object_def.data_type) + "* dst",
         R"(
   int c = d * 4;
   int index = (y * size.x + x) * size.z + c;
@@ -134,29 +136,30 @@ class FromTensorConverter : public OpenClConverterImpl {
         R"(
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 
-const sampler_t smp_zero = CLK_NORMALIZED_COORDS_FALSE | CLK_ADDRESS_CLAMP | CLK_FILTER_NEAREST;
+const sampler_t smp_none = CLK_NORMALIZED_COORDS_FALSE | CLK_ADDRESS_NONE | CLK_FILTER_NEAREST;
 
 __kernel void from_tensor()" +
-        GetTensorDeclaration(src_tensor_type, AccessType::READ,
-                             input_def.object_def.data_type) +
-        " src, " + params_kernel.first + R"(, int4 size) {
+        src_tensor.GetDeclaration(AccessType::READ) + ", " +
+        params_kernel.first + R"(, int4 size) {
   int x = get_global_id(0);
   int y = get_global_id(1);
   int d = get_global_id(2);
   if (x >= size.x || y >= size.y || d >= size.w) return;
-  )" + GetDataType4(input_def.object_def.data_type) +
+  )" + ToCLDataType(input_def.object_def.data_type, 4) +
         " input = " + src_tensor.Read3D("x", "y", "d") + ";\n" +
         params_kernel.second + "\n}";
     queue_ = environment->queue();
     dims_ = input_def.dimensions;
-    return CreateKernel(shader_src, "from_tensor", environment, &kernel_);
+    return environment->program_cache()->GetOrCreateCLKernel(
+        shader_src, "from_tensor", environment->context(),
+        environment->device(), &kernel_);
   }
 
   Status Convert(const TensorObject& input_obj,
                  const TensorObject& output_obj) override {
     auto output = absl::get_if<OpenClBuffer>(&output_obj);
     if (!output || !output->memobj) {
-      return InvalidArgumentError("Missing output in to_bhwc converter");
+      return InvalidArgumentError("Missing output in from_tensor converter");
     }
     auto input_texture = absl::get_if<OpenClTexture>(&input_obj);
     if (input_texture && input_texture->memobj) {
@@ -166,7 +169,7 @@ __kernel void from_tensor()" +
     if (input_buffer && input_buffer->memobj) {
       return DispatchKernel(input_buffer->memobj, output->memobj);
     }
-    return InvalidArgumentError("Missing input in to_bhwc converter");
+    return InvalidArgumentError("Missing input in from_tensor converter");
   }
 };
 
@@ -198,11 +201,11 @@ class ToTensorConverter : public OpenClConverterImpl {
       const TensorObjectDef& input_def,
       const TensorObjectDef& output_def) const {
     return std::make_pair(
-        "__global " + GetDataType4(input_def.object_def.data_type) + "* src",
+        "__global " + ToCLDataType(input_def.object_def.data_type, 4) + "* src",
         output_def.object_def.data_type == input_def.object_def.data_type
             ? "result = src[(d * size.y + y) * size.x + x];"
             : "result = convert_" +
-                  GetDataType4(output_def.object_def.data_type) +
+                  ToCLDataType(output_def.object_def.data_type, 4) +
                   "(src[(d * size.y + y) * size.x + x]);");
   }
 
@@ -210,7 +213,7 @@ class ToTensorConverter : public OpenClConverterImpl {
       const TensorObjectDef& input_def,
       const TensorObjectDef& output_def) const {
     return std::make_pair(
-        "__global " + GetDataType(input_def.object_def.data_type) + "* src",
+        "__global " + ToCLDataType(input_def.object_def.data_type) + "* src",
         R"(int c = d * 4;
   int index = (y * size.x + x) * size.z + c;
   result.x = src[index];
@@ -238,27 +241,28 @@ class ToTensorConverter : public OpenClConverterImpl {
 
 __kernel void to_tensor()" +
         params_kernel.first + ", " +
-        GetTensorDeclaration(dst_tensor_type, AccessType::WRITE,
-                             output_def.object_def.data_type) +
-        R"( dst, int4 size) {
+        dst_tensor.GetDeclaration(AccessType::WRITE) +
+        R"(, int4 size) {
   int x = get_global_id(0);
   int y = get_global_id(1);
   int d = get_global_id(2);
 
   if (x >= size.x || y >= size.y || d >= size.w) return;
-  )" + GetDataType4(output_def.object_def.data_type) +
+  )" + ToCLDataType(output_def.object_def.data_type, 4) +
         " result;\n" + params_kernel.second + "\n  " +
         dst_tensor.Write3D("result", "x", "y", "d") + ";\n}";
     queue_ = environment->queue();
     dims_ = output_def.dimensions;
-    return CreateKernel(shader_src, "to_tensor", environment, &kernel_);
+    return environment->program_cache()->GetOrCreateCLKernel(
+        shader_src, "to_tensor", environment->context(), environment->device(),
+        &kernel_);
   }
 
   Status Convert(const TensorObject& input_obj,
                  const TensorObject& output_obj) override {
     auto input = absl::get_if<OpenClBuffer>(&input_obj);
     if (!input || !input->memobj) {
-      return InvalidArgumentError("Missing input in from_bhwc converter");
+      return InvalidArgumentError("Missing input in to_tensor converter");
     }
     auto output_texture = absl::get_if<OpenClTexture>(&output_obj);
     if (output_texture && output_texture->memobj) {
@@ -268,7 +272,7 @@ __kernel void to_tensor()" +
     if (output_buffer && output_buffer->memobj) {
       return DispatchKernel(input->memobj, output_buffer->memobj);
     }
-    return InvalidArgumentError("Missing input in from_bhwc converter");
+    return InvalidArgumentError("Missing input in to_tensor converter");
   }
 };
 
@@ -296,11 +300,17 @@ std::array<size_t, 3> CalculateTextureRegion(const TensorObjectDef& def) {
   return region;
 }
 
+bool IsOpenClTextureOrBuffer(ObjectType type) {
+  return type == ObjectType::OPENCL_BUFFER ||
+         type == ObjectType::OPENCL_TEXTURE;
+}
+
 // Copies data from one object of the same type and layout to another object.
 class TrivialCopier : public OpenClConverterImpl {
  public:
   static bool IsSupported(const ObjectDef& input, const ObjectDef& output) {
-    return input.data_type == output.data_type &&
+    return IsOpenClTextureOrBuffer(input.object_type) &&
+           input.data_type == output.data_type &&
            input.object_type == output.object_type &&
            input.data_layout == output.data_layout;
   }
@@ -327,7 +337,7 @@ class TrivialCopier : public OpenClConverterImpl {
     if (buffer_input && buffer_output) {
       return Copy(*buffer_input, *buffer_output);
     }
-    return UnimplementedError("Unsupported conversion");
+    return InternalError("Unexpected object");
   }
 
   Status Copy(const OpenClBuffer& input, const OpenClBuffer& output) {
@@ -354,11 +364,6 @@ class TrivialCopier : public OpenClConverterImpl {
   DataType data_type_ = DataType::UNKNOWN;
   std::array<size_t, 3> region_;
 };
-
-static bool IsOpenClTextureOrBuffer(ObjectType type) {
-  return type == ObjectType::OPENCL_BUFFER ||
-         type == ObjectType::OPENCL_TEXTURE;
-}
 
 // Copies data from/to CPU into a tensor.
 class CpuCopier : public OpenClConverterImpl {
@@ -411,7 +416,7 @@ class CpuCopier : public OpenClConverterImpl {
             buffer_input->memobj, cpu_output->size_bytes, cpu_output->data);
       }
     }
-    return UnimplementedError("Unsupported conversion");
+    return InternalError("Unexpected object");
   }
 
  private:
@@ -424,7 +429,7 @@ class OpenClTensorConverterBuilder : public TensorObjectConverterBuilder {
       : environment_(environment) {}
 
   bool IsSupported(const TensorObjectDef& input,
-                   const TensorObjectDef& output) final {
+                   const TensorObjectDef& output) const final {
     const auto& input_def = input.object_def;
     const auto& output_def = output.object_def;
     return input.dimensions == output.dimensions &&
