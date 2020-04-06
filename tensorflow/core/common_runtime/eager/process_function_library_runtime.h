@@ -33,45 +33,13 @@ limitations under the License.
 namespace tensorflow {
 namespace eager {
 
-#if !defined(IS_MOBILE_PLATFORM)
-class EagerFunctionArgs : public FunctionArgsInterface {
- public:
-  EagerFunctionArgs(const std::vector<absl::optional<Tensor>>* tensor_args,
-                    std::function<Status(const int, RemoteTensorHandle*)>
-                        serialize_remote_handle)
-      : tensor_args_(tensor_args),
-        serialize_remote_handle_(std::move(serialize_remote_handle)) {}
-
-  ~EagerFunctionArgs() override{};
-
-  Status GetLocalArg(const int index, Tensor* val) const override;
-
-  Status GetRemoteArg(const int index,
-                      eager::RemoteTensorHandle* val) const override;
-
- private:
-  const std::vector<absl::optional<Tensor>>* tensor_args_;
-  std::function<Status(const int, eager::RemoteTensorHandle*)>
-      serialize_remote_handle_;
-};
-#endif  // IS_MOBILE_PLATFORM
-
 // A ProcessFunctionLibraryRuntime which supports running functions with inputs
 // on remote devices.
 // TODO(b/134094971): Support outputting tensors on remote devices.
 class EagerProcessFunctionLibraryRuntime
     : public ProcessFunctionLibraryRuntime {
  public:
-  EagerProcessFunctionLibraryRuntime(
-      const DeviceMgr* device_mgr, Env* env, const ConfigProto* config,
-      int graph_def_version, const FunctionLibraryDefinition* lib_def,
-      const OptimizerOptions& optimizer_options,
-      thread::ThreadPool* thread_pool = nullptr,
-      DistributedFunctionLibraryRuntime* parent = nullptr,
-      const CustomKernelCreator* custom_kernel_creator = nullptr)
-      : ProcessFunctionLibraryRuntime(
-            device_mgr, env, config, graph_def_version, lib_def,
-            optimizer_options, thread_pool, parent, custom_kernel_creator) {}
+  using ProcessFunctionLibraryRuntime::ProcessFunctionLibraryRuntime;
 
 #if !defined(IS_MOBILE_PLATFORM)
   void Run(const FunctionLibraryRuntime::Options& opts,
@@ -82,8 +50,8 @@ class EagerProcessFunctionLibraryRuntime
  private:
   void RunRemoteDevice(
       const FunctionLibraryRuntime::Options& opts,
-      FunctionLibraryRuntime::Handle local_handle, const InternalArgsView& args,
-      std::vector<Tensor>* rets,
+      FunctionLibraryRuntime::Handle local_handle,
+      gtl::ArraySlice<FunctionArg> args, std::vector<Tensor>* rets,
       FunctionLibraryRuntime::DoneCallback done) const override;
 #endif  // IS_MOBILE_PLATFORM
 };

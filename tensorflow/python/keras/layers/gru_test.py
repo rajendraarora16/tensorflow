@@ -23,7 +23,9 @@ import numpy as np
 
 from tensorflow.python import keras
 from tensorflow.python.eager import context
+from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import test_util as tf_test_util
+from tensorflow.python.keras import combinations
 from tensorflow.python.keras import keras_parameterized
 from tensorflow.python.keras import testing_utils
 from tensorflow.python.keras.utils import np_utils
@@ -44,7 +46,10 @@ class GRULayerTest(keras_parameterized.TestCase):
                 'return_sequences': True},
         input_shape=(num_samples, timesteps, embedding_dim))
 
+  @tf_test_util.run_v2_only
   def test_float64_GRU(self):
+    if test.is_built_with_rocm():
+      self.skipTest('Double type is yet not supported in ROCm')
     num_samples = 2
     timesteps = 3
     embedding_dim = 4
@@ -68,8 +73,7 @@ class GRULayerTest(keras_parameterized.TestCase):
     model.compile(
         'rmsprop',
         'mse',
-        run_eagerly=testing_utils.should_run_eagerly(),
-        experimental_run_tf_function=testing_utils.should_run_tf_function())
+        run_eagerly=testing_utils.should_run_eagerly())
     x = np.random.random((num_samples, timesteps, embedding_dim))
     y = np.random.random((num_samples, units))
     model.train_on_batch(x, y)
@@ -85,6 +89,11 @@ class GRULayerTest(keras_parameterized.TestCase):
                 'dropout': 0.1,
                 'recurrent_dropout': 0.1},
         input_shape=(num_samples, timesteps, embedding_dim))
+
+  def test_recurrent_dropout_with_implementation_restriction(self):
+    layer = keras.layers.GRU(2, recurrent_dropout=0.1, implementation=2)
+    # The implementation is force to 1 due to the limit of recurrent_dropout.
+    self.assertEqual(layer.implementation, 1)
 
   @parameterized.parameters([0, 1, 2])
   def test_implementation_mode_GRU(self, implementation_mode):
@@ -119,12 +128,13 @@ class GRULayerTest(keras_parameterized.TestCase):
     gru_model.compile(
         'rmsprop',
         'mse',
-        run_eagerly=testing_utils.should_run_eagerly(),
-        experimental_run_tf_function=testing_utils.should_run_tf_function())
+        run_eagerly=testing_utils.should_run_eagerly())
     gru_model.fit(x_train, y_train)
     gru_model.predict(x_train)
 
   def test_with_masking_layer_GRU(self):
+    if test.is_built_with_rocm():
+      self.skipTest('MIOpen only supports packed input output')
     layer_class = keras.layers.GRU
     inputs = np.random.random((2, 3, 4))
     targets = np.abs(np.random.random((2, 3, 5)))
@@ -135,11 +145,12 @@ class GRULayerTest(keras_parameterized.TestCase):
     model.compile(
         loss='categorical_crossentropy',
         optimizer='rmsprop',
-        run_eagerly=testing_utils.should_run_eagerly(),
-        experimental_run_tf_function=testing_utils.should_run_tf_function())
+        run_eagerly=testing_utils.should_run_eagerly())
     model.fit(inputs, targets, epochs=1, batch_size=2, verbose=1)
 
   def test_statefulness_GRU(self):
+    if test.is_built_with_rocm():
+      self.skipTest('MIOpen only supports packed input output')
     num_samples = 2
     timesteps = 3
     embedding_dim = 4
@@ -160,8 +171,7 @@ class GRULayerTest(keras_parameterized.TestCase):
     model.compile(
         optimizer='sgd',
         loss='mse',
-        run_eagerly=testing_utils.should_run_eagerly(),
-        experimental_run_tf_function=testing_utils.should_run_tf_function())
+        run_eagerly=testing_utils.should_run_eagerly())
     out1 = model.predict(np.ones((num_samples, timesteps)))
     self.assertEqual(out1.shape, (num_samples, units))
 
@@ -205,8 +215,16 @@ class GRULayerTest(keras_parameterized.TestCase):
 
     np.testing.assert_allclose(out7, out6, atol=1e-5)
 
+  def test_get_initial_states(self):
+    batch_size = 4
+    cell = keras.layers.GRUCell(20)
+    initial_state = cell.get_initial_state(
+        batch_size=batch_size, dtype=dtypes.float32)
+    _, state = cell(np.ones((batch_size, 20), dtype=np.float32), initial_state)
+    self.assertEqual(state.shape, initial_state.shape)
 
-@tf_test_util.run_all_in_graph_and_eager_modes
+
+@combinations.generate(combinations.combine(mode=['graph', 'eager']))
 class GRULayerGenericTest(test.TestCase):
 
   def test_constraints_GRU(self):

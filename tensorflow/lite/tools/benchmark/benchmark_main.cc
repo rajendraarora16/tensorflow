@@ -22,14 +22,8 @@ namespace tflite {
 namespace benchmark {
 
 int Main(int argc, char** argv) {
-#ifdef TFLITE_CUSTOM_OPS_HEADER
-  TFLITE_LOG(INFO) << "STARTING with custom ops!";
-#else
   TFLITE_LOG(INFO) << "STARTING!";
-#endif
   BenchmarkTfLiteModel benchmark;
-  BenchmarkLoggingListener listener;
-  benchmark.AddListener(&listener);
   if (benchmark.Run(argc, argv) != kTfLiteOk) {
     TFLITE_LOG(ERROR) << "Benchmarking failed.";
     return EXIT_FAILURE;

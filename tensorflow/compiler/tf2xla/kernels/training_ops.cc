@@ -13,15 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/compiler/tf2xla/kernels/cwise_ops.h"
+#include <array>
+
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
+#include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "tensorflow/compiler/xla/client/lib/constants.h"
 #include "tensorflow/compiler/xla/client/lib/math.h"
 #include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/literal.h"
-#include "tensorflow/core/framework/kernel_def_builder.h"
-#include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/errors.h"
 
 namespace tensorflow {
 namespace {
@@ -52,9 +55,9 @@ class ResourceApplyGradientDescent : public XlaOpKernel {
     OP_REQUIRES_OK(ctx, ctx->AssignVariable(0, type, handle));
   }
 };
-REGISTER_XLA_OP(
-    Name("ResourceApplyGradientDescent").TypeConstraint("T", kFloatTypes),
-    ResourceApplyGradientDescent);
+REGISTER_XLA_OP(Name("ResourceApplyGradientDescent")
+                    .TypeConstraint("T", kFloatAndComplexTypes),
+                ResourceApplyGradientDescent);
 
 xla::XlaOp ProximalGradientDescentUpdate(xla::XlaOp var, xla::XlaOp lr,
                                          xla::XlaOp l1, xla::XlaOp l2,
@@ -111,7 +114,7 @@ class ResourceApplyProximalGradientDescent : public XlaOpKernel {
   DataType dtype_;
 };
 REGISTER_XLA_OP(Name("ResourceApplyProximalGradientDescent")
-                    .TypeConstraint("T", kFloatTypes),
+                    .TypeConstraint("T", kFloatAndComplexTypes),
                 ResourceApplyProximalGradientDescent);
 
 class ResourceApplyMomentum : public XlaOpKernel {
@@ -226,9 +229,9 @@ class ResourceApplyKerasMomentum : public XlaOpKernel {
  private:
   bool use_nesterov_;
 };
-REGISTER_XLA_OP(
-    Name("ResourceApplyKerasMomentum").TypeConstraint("T", kFloatTypes),
-    ResourceApplyKerasMomentum);
+REGISTER_XLA_OP(Name("ResourceApplyKerasMomentum")
+                    .TypeConstraint("T", kFloatAndComplexTypes),
+                ResourceApplyKerasMomentum);
 
 class ResourceApplyAdagrad : public XlaOpKernel {
  public:
@@ -274,8 +277,9 @@ class ResourceApplyAdagrad : public XlaOpKernel {
  private:
   bool update_slots_;
 };
-REGISTER_XLA_OP(Name("ResourceApplyAdagrad").TypeConstraint("T", kFloatTypes),
-                ResourceApplyAdagrad);
+REGISTER_XLA_OP(
+    Name("ResourceApplyAdagrad").TypeConstraint("T", kFloatAndComplexTypes),
+    ResourceApplyAdagrad);
 
 class ResourceApplyAdagradV2 : public XlaOpKernel {
  public:
@@ -328,8 +332,9 @@ class ResourceApplyAdagradV2 : public XlaOpKernel {
  private:
   bool update_slots_;
 };
-REGISTER_XLA_OP(Name("ResourceApplyAdagradV2").TypeConstraint("T", kFloatTypes),
-                ResourceApplyAdagradV2);
+REGISTER_XLA_OP(
+    Name("ResourceApplyAdagradV2").TypeConstraint("T", kFloatAndComplexTypes),
+    ResourceApplyAdagradV2);
 
 class ResourceApplyProximalAdagrad : public XlaOpKernel {
  public:
@@ -383,9 +388,9 @@ class ResourceApplyProximalAdagrad : public XlaOpKernel {
  private:
   DataType dtype_;
 };
-REGISTER_XLA_OP(
-    Name("ResourceApplyProximalAdagrad").TypeConstraint("T", kFloatTypes),
-    ResourceApplyProximalAdagrad);
+REGISTER_XLA_OP(Name("ResourceApplyProximalAdagrad")
+                    .TypeConstraint("T", kFloatAndComplexTypes),
+                ResourceApplyProximalAdagrad);
 
 class ResourceApplyAdagradDA : public XlaOpKernel {
  public:
@@ -528,9 +533,9 @@ class ResourceApplyAdam : public XlaOpKernel {
     // alpha <- learning_rate * sqrt(1 - beta2^t) / (1 - beta1^t)
     // m_t <- beta1 * m_{t-1} + (1 - beta1) * g_t
     // v_t <- beta2 * v_{t-1} + (1 - beta2) * g_t * g_t
-    // if use_nesterov:
-    //   variable <- variable - alpha * m_t / (sqrt(v_t) + epsilon)
     // if not use_nesterov:
+    //   variable <- variable - alpha * m_t / (sqrt(v_t) + epsilon)
+    // if use_nesterov:
     //   variable <- variable - alpha * (m_t * beta1 + (1 - beta1) * g_t) /
     //   (sqrt(v_t) + epsilon)
 
@@ -556,8 +561,9 @@ class ResourceApplyAdam : public XlaOpKernel {
   DataType dtype_;
   bool use_nesterov_;
 };
-REGISTER_XLA_OP(Name("ResourceApplyAdam").TypeConstraint("T", kFloatTypes),
-                ResourceApplyAdam);
+REGISTER_XLA_OP(
+    Name("ResourceApplyAdam").TypeConstraint("T", kFloatAndComplexTypes),
+    ResourceApplyAdam);
 
 class ResourceApplyAdaMax : public XlaOpKernel {
  public:
@@ -729,8 +735,9 @@ class ResourceApplyRMSProp : public XlaOpKernel {
  private:
   DataType dtype_;
 };
-REGISTER_XLA_OP(Name("ResourceApplyRMSProp").TypeConstraint("T", kFloatTypes),
-                ResourceApplyRMSProp);
+REGISTER_XLA_OP(
+    Name("ResourceApplyRMSProp").TypeConstraint("T", kFloatAndComplexTypes),
+    ResourceApplyRMSProp);
 
 class ResourceApplyCenteredRMSProp : public ResourceApplyRMSProp {
  public:
@@ -739,9 +746,9 @@ class ResourceApplyCenteredRMSProp : public ResourceApplyRMSProp {
     centered_ = true;
   }
 };
-REGISTER_XLA_OP(
-    Name("ResourceApplyCenteredRMSProp").TypeConstraint("T", kFloatTypes),
-    ResourceApplyCenteredRMSProp);
+REGISTER_XLA_OP(Name("ResourceApplyCenteredRMSProp")
+                    .TypeConstraint("T", kFloatAndComplexTypes),
+                ResourceApplyCenteredRMSProp);
 
 void CompileFtrl(XlaOpKernelContext* ctx, DataType dtype,
                  bool has_l2_shrinkage) {
@@ -942,8 +949,9 @@ class ResourceApplyAdadelta : public XlaOpKernel {
  private:
   DataType dtype_;
 };
-REGISTER_XLA_OP(Name("ResourceApplyAdadelta").TypeConstraint("T", kFloatTypes),
-                ResourceApplyAdadelta);
+REGISTER_XLA_OP(
+    Name("ResourceApplyAdadelta").TypeConstraint("T", kFloatAndComplexTypes),
+    ResourceApplyAdadelta);
 
 class ResourceApplySignBase : public XlaOpKernel {
  public:

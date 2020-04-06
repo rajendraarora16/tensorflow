@@ -24,6 +24,7 @@ import gzip
 
 import numpy as np
 
+from tensorflow.python import tf2
 from tensorflow.python.data.experimental.ops import error_ops
 from tensorflow.python.data.experimental.ops import parsing_ops
 from tensorflow.python.data.ops import dataset_ops
@@ -439,7 +440,7 @@ def make_csv_dataset_v2(
     if compression_type is not None:
       compression_type_value = tensor_util.constant_value(compression_type)
       if compression_type_value is None:
-        raise ValueError("Received unkown compression_type")
+        raise ValueError("Received unknown compression_type")
       if compression_type_value == "GZIP":
         file_io_fn = lambda filename: gzip.open(filename, "rt")
       elif compression_type_value == "ZLIB":
@@ -624,8 +625,6 @@ class CsvDatasetV2(dataset_ops.DatasetSource):
     We can construct a CsvDataset from it as follows:
 
     ```python
-    tf.compat.v1.enable_eager_execution()
-
      dataset = tf.data.experimental.CsvDataset(
         "my_file*.csv",
         [tf.float32,  # Required field, use dtype or empty tensor
@@ -750,7 +749,7 @@ class CsvDatasetV1(dataset_ops.DatasetV1Adapter):
 def make_batched_features_dataset_v2(file_pattern,
                                      batch_size,
                                      features,
-                                     reader=core_readers.TFRecordDataset,
+                                     reader=None,
                                      label_key=None,
                                      reader_args=None,
                                      num_epochs=None,
@@ -849,9 +848,11 @@ def make_batched_features_dataset_v2(file_pattern,
     Each `dict` maps feature keys to `Tensor` or `SparseTensor` objects.
 
   Raises:
-    TypeError: If `reader` is a `tf.compat.v1.ReaderBase` subclass.
+    TypeError: If `reader` is of the wrong type.
     ValueError: If `label_key` is not one of the `features` keys.
   """
+  if reader is None:
+    reader = core_readers.TFRecordDataset
 
   if reader_num_threads is None:
     reader_num_threads = 1
@@ -932,7 +933,7 @@ def make_batched_features_dataset_v2(file_pattern,
 def make_batched_features_dataset_v1(file_pattern,  # pylint: disable=missing-docstring
                                      batch_size,
                                      features,
-                                     reader=core_readers.TFRecordDataset,
+                                     reader=None,
                                      label_key=None,
                                      reader_args=None,
                                      num_epochs=None,
@@ -995,8 +996,6 @@ class SqlDatasetV2(dataset_ops.DatasetSource):
     For example:
 
     ```python
-    tf.compat.v1.enable_eager_execution()
-
     dataset = tf.data.experimental.SqlDataset("sqlite", "/foo/bar.sqlite3",
                                               "SELECT name, age FROM people",
                                               (tf.string, tf.int32))
@@ -1042,9 +1041,13 @@ class SqlDatasetV1(dataset_ops.DatasetV1Adapter):
     super(SqlDatasetV1, self).__init__(wrapped)
 
 
-# TODO(b/119044825): Until all `tf.data` unit tests are converted to V2, keep
-# these aliases in place.
-CsvDataset = CsvDatasetV1
-SqlDataset = SqlDatasetV1
-make_batched_features_dataset = make_batched_features_dataset_v1
-make_csv_dataset = make_csv_dataset_v1
+if tf2.enabled():
+  CsvDataset = CsvDatasetV2
+  SqlDataset = SqlDatasetV2
+  make_batched_features_dataset = make_batched_features_dataset_v2
+  make_csv_dataset = make_csv_dataset_v2
+else:
+  CsvDataset = CsvDatasetV1
+  SqlDataset = SqlDatasetV1
+  make_batched_features_dataset = make_batched_features_dataset_v1
+  make_csv_dataset = make_csv_dataset_v1

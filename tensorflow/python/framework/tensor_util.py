@@ -27,6 +27,7 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_like
 from tensorflow.python.framework import tensor_shape
+from tensorflow.python.types import core
 from tensorflow.python.util import compat
 from tensorflow.python.util import nest
 from tensorflow.python.util.tf_export import tf_export
@@ -325,7 +326,7 @@ def _AssertCompatible(values, dtype):
   except ValueError as e:
     [mismatch] = e.args
     if dtype is None:
-      raise TypeError("List of Tensors when single Tensor expected")
+      raise TypeError("Expected any non-tensor type, got a tensor instead.")
     else:
       raise TypeError("Expected %s, got %s of type '%s' instead." %
                       (dtype.name, repr(mismatch), type(mismatch).__name__))
@@ -361,12 +362,14 @@ def make_tensor_proto(values, dtype=None, shape=None, verify_shape=False,
   common workflow. That said, this utility function is still useful for
   generating TF Serving request protos:
 
+  ```python
     request = tensorflow_serving.apis.predict_pb2.PredictRequest()
     request.model_spec.name = "my_model"
     request.model_spec.signature_name = "serving_default"
     request.inputs["images"].CopyFrom(tf.make_tensor_proto(X_new))
+  ```
 
-  make_tensor_proto accepts "values" of a python scalar, a python list, a
+  `make_tensor_proto` accepts "values" of a python scalar, a python list, a
   numpy ndarray, or a numpy scalar.
 
   If "values" is a python scalar or a python list, make_tensor_proto
@@ -376,9 +379,9 @@ def make_tensor_proto(values, dtype=None, shape=None, verify_shape=False,
   type with the given dtype.
 
   In either case above, the numpy ndarray (either the caller provided
-  or the auto converted) must have the compatible type with dtype.
+  or the auto-converted) must have the compatible type with dtype.
 
-  make_tensor_proto then converts the numpy array to a tensor proto.
+  `make_tensor_proto` then converts the numpy array to a tensor proto.
 
   If "shape" is None, the resulting tensor proto represents the numpy
   array precisely.
@@ -564,6 +567,17 @@ def MakeNdarray(tensor):
   """Create a numpy ndarray from a tensor.
 
   Create a numpy ndarray with the same shape and data as the tensor.
+
+  For example:
+
+  ```python
+  # Tensor a has shape (2,3)
+  a = tf.constant([[1,2,3],[4,5,6]])
+  proto_tensor = tf.make_tensor_proto(a)  # convert `tensor a` to a proto tensor
+  tf.make_ndarray(proto_tensor) # output: array([[1, 2, 3],
+  #                                              [4, 5, 6]], dtype=int32)
+  # output has shape (2,3)
+  ```
 
   Args:
     tensor: A TensorProto.
@@ -857,6 +871,20 @@ def constant_value_as_shape(tensor):  # pylint: disable=invalid-name
   shape = tensor.get_shape().with_rank(1)
   if shape == [0]:
     return tensor_shape.TensorShape([])
+  elif tensor.op.type == "Cast":
+    pre_cast = constant_value_as_shape(tensor.op.inputs[0])
+    if pre_cast.dims is None:
+      # the input to cast has a totally undefined shape; just return that.
+      return pre_cast
+    cast_dtype = dtypes.as_dtype(tensor.op.get_attr("DstT"))
+    if cast_dtype not in (dtypes.int32, dtypes.int64):
+      return tensor_shape.unknown_shape(shape.dims[0].value)
+    dest_dtype_shape_array = np.array(
+        [x if x is not None else -1 for x in pre_cast.as_list()]).astype(
+            cast_dtype.as_numpy_dtype)
+    return tensor_shape.TensorShape([
+        x if x >= 0 else None
+        for x in dest_dtype_shape_array])
   elif tensor.op.type == "Shape":
     return tensor.op.inputs[0].get_shape()
   elif tensor.op.type == "Pack":
@@ -950,10 +978,23 @@ def constant_value_as_shape(tensor):  # pylint: disable=invalid-name
 
 @tf_export("is_tensor")
 def is_tensor(x):  # pylint: disable=invalid-name
-  """Checks whether `x` is a tensor or "tensor-like".
+  """Checks whether `x` is a TF-native type that can be passed to many TF ops.
 
-  If `is_tensor(x)` returns `True`, it is safe to assume that `x` is a tensor or
-  can be converted to a tensor using `ops.convert_to_tensor(x)`.
+  Use is_tensor to differentiate types that can ingested by TensorFlow ops
+  without any conversion (e.g., `tf.Tensor`, `tf.SparseTensor`, and
+  `tf.RaggedTensor`) from types that need to be converted into tensors before
+  they are ingested (e.g., numpy `ndarray` and Python scalars).
+
+  For example, in the following code block:
+
+  ```python
+  if not tf.is_tensor(t):
+    t = tf.convert_to_tensor(t)
+  return t.dtype
+  ```
+
+  we check to make sure that `t` is a tensor (and convert it if not) before
+  accessing its `shape` and `dtype`.
 
   Args:
     x: A python object to check.
@@ -961,7 +1002,7 @@ def is_tensor(x):  # pylint: disable=invalid-name
   Returns:
     `True` if `x` is a tensor or "tensor-like", `False` if not.
   """
-  return (isinstance(x, tensor_like._TensorLike) or  # pylint: disable=protected-access
+  return (isinstance(x, (tensor_like.TensorLike, core.Tensor)) or
           ops.is_dense_tensor_like(x) or
           getattr(x, "is_tensor_like", False))
 
@@ -976,7 +1017,7 @@ def shape_tensor(shape):  # pylint: disable=invalid-name
       # If there are Dimension objects in the shape, unwrap them. This can be a
       # problem if v1 and v2 TensorShape objects get mixed up in partial
       # conversions, leading to shapes such as (1, 2, Dimension(5)), which are
-      # not convertible to Tensors becasue of mixed content.
+      # not convertible to Tensors because of mixed content.
       shape = tuple(map(tensor_shape.dimension_value, shape))
   return ops.convert_to_tensor(shape, dtype=dtype, name="shape")
 
